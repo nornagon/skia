@@ -8,7 +8,7 @@
 #include "SkCpu.h"
 #include "SkOnce.h"
 
-#if defined(SK_CPU_X86)
+#if defined(SK_CPU_X86) && !defined(SK_BUILD_FOR_WATCHOS)
     #if defined(SK_BUILD_FOR_WIN32)
         #include <intrin.h>
         static void cpuid (uint32_t abcd[4]) { __cpuid  ((int*)abcd, 1);    }
