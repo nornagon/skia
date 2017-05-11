@@ -14,6 +14,7 @@
 #include "SkPath.h"
 #include "SkPictureRecorder.h"
 #include "SkSurface.h"
+#include "SkImageInfoPriv.h"
 
 #include "sk_canvas.h"
 #include "sk_data.h"
@@ -27,6 +28,14 @@
 
 sk_colortype_t sk_colortype_get_default_8888() {
     return (sk_colortype_t)SkColorType::kN32_SkColorType;
+}
+
+bool sk_imageinfo_valid_conversion(const sk_imageinfo_t* cdst, const sk_imageinfo_t* csrc) {
+    SkImageInfo src;
+    from_c(*csrc, &src);
+    SkImageInfo dst;
+    from_c(*cdst, &dst);
+    return SkImageInfoValidConversion (dst, src);
 }
 
 sk_surface_t* sk_surface_new_raster(const sk_imageinfo_t* cinfo, const sk_surfaceprops_t* props) {

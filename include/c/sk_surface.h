@@ -20,6 +20,8 @@ SK_C_PLUS_PLUS_BEGIN_GUARD
 */
 SK_C_API sk_colortype_t sk_colortype_get_default_8888(void);
 
+SK_C_API bool sk_imageinfo_valid_conversion(const sk_imageinfo_t* dst, const sk_imageinfo_t* src);
+
 /**
     Return a new surface, with the memory for the pixels automatically
     allocated.  If the requested surface cannot be created, or the
