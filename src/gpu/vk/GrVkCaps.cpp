@@ -28,8 +28,6 @@ GrVkCaps::GrVkCaps(const GrContextOptions& contextOptions, const GrVkInterface* 
     fMipMapSupport = true;   // always available in Vulkan
     fSRGBSupport = true;   // always available in Vulkan
     fNPOTTextureTileSupport = true;  // always available in Vulkan
-    fTwoSidedStencilSupport = true;  // always available in Vulkan
-    fStencilWrapOpsSupport = true; // always available in Vulkan
     fDiscardRenderTargetSupport = true;
     fReuseScratchTextures = true; //TODO: figure this out
     fGpuTracingSupport = false; //TODO: figure this out
@@ -145,6 +143,9 @@ void GrVkCaps::initSampleCount(const VkPhysicalDeviceProperties& properties) {
     VkSampleCountFlags stencilSamples = properties.limits.framebufferStencilSampleCounts;
 
     fMaxColorSampleCount = get_max_sample_count(colorSamples);
+    if (kImagination_VkVendor == properties.vendorID) {
+        fMaxColorSampleCount = 0;
+    }
     fMaxStencilSampleCount = get_max_sample_count(stencilSamples);
 }
 
@@ -175,7 +176,6 @@ void GrVkCaps::initGrCaps(const VkPhysicalDeviceProperties& properties,
 
     fMapBufferFlags = kCanMap_MapFlag | kSubset_MapFlag;
 
-    fStencilWrapOpsSupport = true;
     fOversizedStencilSupport = true;
     fSampleShadingSupport = SkToBool(featureFlags & kSampleRateShading_GrVkFeatureFlag);
 

@@ -19,8 +19,11 @@ public:
 protected:
     bool onGetPixels(const SkImageInfo& info, void* pixels, size_t rowBytes, SkPMColor ctable[],
                      int* ctableCount) override;
+    bool onGetPixels(const SkImageInfo& info, void* pixels, size_t rowBytes, const Options& opts)
+                     override;
 
 #if SK_SUPPORT_GPU
+    bool onCanGenerateTexture() const override { return true; }
     sk_sp<GrTextureProxy> onGenerateTexture(GrContext*, const SkImageInfo&,
                                             const SkIPoint&) override;
 #endif

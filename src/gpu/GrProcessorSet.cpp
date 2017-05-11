@@ -11,6 +11,8 @@
 #include "GrXferProcessor.h"
 #include "effects/GrPorterDuffXferProcessor.h"
 
+const GrProcessorSet GrProcessorSet::gEmpty{GrProcessorSet::Empty::kEmpty};
+
 GrProcessorSet::GrProcessorSet(GrPaint&& paint) : fXP(paint.getXPFactory()) {
     fFlags = 0;
     if (paint.numColorFragmentProcessors() <= kMaxColorProcessors) {
@@ -29,12 +31,6 @@ GrProcessorSet::GrProcessorSet(GrPaint&& paint) : fXP(paint.getXPFactory()) {
     } else {
         SkDebugf("Insane number of color fragment processors in paint. Dropping all processors.");
         fColorFragmentProcessorCnt = 0;
-    }
-    if (paint.getDisableOutputConversionToSRGB()) {
-        fFlags |= kDisableOutputConversionToSRGB_Flag;
-    }
-    if (paint.getAllowSRGBInputs()) {
-        fFlags |= kAllowSRGBInputs_Flag;
     }
 }
 

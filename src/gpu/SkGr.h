@@ -119,15 +119,12 @@ bool SkPaintToGrPaintReplaceShader(GrContext*,
                                    GrPaint* grPaint);
 
 /** Blends the SkPaint's shader (or color if no shader) with the color which specified via a
-    GrOp's GrPrimitiveProcesssor. Currently there is a bool param to indicate whether the
-    primitive color is the dst or src color to the blend in order to work around differences between
-    drawVertices and drawAtlas. */
+    GrOp's GrPrimitiveProcesssor. */
 bool SkPaintToGrPaintWithXfermode(GrContext* context,
                                   GrRenderTargetContext* rtc,
                                   const SkPaint& skPaint,
                                   const SkMatrix& viewM,
                                   SkBlendMode primColorMode,
-                                  bool primitiveIsSrc,
                                   GrPaint* grPaint);
 
 /** This is used when there is a primitive color, but the shader should be ignored. Currently,
@@ -137,7 +134,7 @@ bool SkPaintToGrPaintWithXfermode(GrContext* context,
 inline bool SkPaintToGrPaintWithPrimitiveColor(GrContext* context, GrRenderTargetContext* rtc,
                                                const SkPaint& skPaint, GrPaint* grPaint) {
     return SkPaintToGrPaintWithXfermode(context, rtc, skPaint, SkMatrix::I(), SkBlendMode::kDst,
-                                        false, grPaint);
+                                        grPaint);
 }
 
 /** This is used when there may or may not be a shader, and the caller wants to plugin a texture
@@ -273,19 +270,5 @@ void GrInstallBitmapUniqueKeyInvalidator(const GrUniqueKey& key, SkPixelRef* pix
     format, but we want to preserve the color space of that source. This picks an appropriate format
     to use. */
 GrPixelConfig GrRenderableConfigForColorSpace(const SkColorSpace*);
-
-/**
- *  If the compressed data in the SkData is supported (as a texture format, this returns
- *  the pixel-config that should be used, and sets outStartOfDataToUpload to the ptr into
- *  the data where the actual raw data starts (skipping any header bytes).
- *
- *  If the compressed data is not supported, this returns kUnknown_GrPixelConfig, and
- *  ignores outStartOfDataToUpload.
- */
-GrPixelConfig GrIsCompressedTextureDataSupported(GrContext* ctx, SkData* data,
-                                                 int expectedW, int expectedH,
-                                                 const void** outStartOfDataToUpload);
-
-
 
 #endif

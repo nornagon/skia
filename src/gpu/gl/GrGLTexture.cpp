@@ -102,12 +102,14 @@ void GrGLTexture::onRelease() {
         }
         fInfo.fID = 0;
     }
+    this->invokeReleaseProc();
     INHERITED::onRelease();
 }
 
 void GrGLTexture::onAbandon() {
     fInfo.fTarget = 0;
     fInfo.fID = 0;
+    this->invokeReleaseProc();
     INHERITED::onAbandon();
 }
 
@@ -120,8 +122,7 @@ std::unique_ptr<GrExternalTextureData> GrGLTexture::detachBackendTexture() {
 
     // Set up a semaphore to be signaled once the data is ready, and flush GL
     sk_sp<GrSemaphore> semaphore = this->getContext()->resourceProvider()->makeSemaphore();
-    this->getGpu()->insertSemaphore(semaphore);
-    this->getGpu()->flush();
+    this->getGpu()->insertSemaphore(semaphore, true);
 
     // Make a copy of our GL-specific information
     auto data = skstd::make_unique<GrGLExternalTextureData>(fInfo, std::move(semaphore),

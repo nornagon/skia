@@ -4,6 +4,7 @@
 
 DEPS = [
   'build/file',
+  'env',
   'recipe_engine/json',
   'recipe_engine/path',
   'recipe_engine/platform',
@@ -11,7 +12,3 @@ DEPS = [
   'recipe_engine/step',
   'vars',
 ]
-
-
-# TODO(borenet): Add coverage
-DISABLE_STRICT_COVERAGE = True

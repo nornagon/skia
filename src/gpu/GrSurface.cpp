@@ -14,16 +14,6 @@
 #include "SkGr.h"
 #include "SkMathPriv.h"
 
-GrSurface::~GrSurface() {
-    if (fLastOpList) {
-        fLastOpList->clearTarget();
-    }
-    SkSafeUnref(fLastOpList);
-
-    // check that invokeReleaseProc has been called (if needed)
-    SkASSERT(NULL == fReleaseProc);
-}
-
 size_t GrSurface::WorstCaseSize(const GrSurfaceDesc& desc, bool useNextPow2) {
     size_t size;
 
@@ -176,23 +166,9 @@ bool GrSurface::hasPendingIO() const {
 }
 
 void GrSurface::onRelease() {
-    this->invokeReleaseProc();
     this->INHERITED::onRelease();
 }
 
 void GrSurface::onAbandon() {
-    this->invokeReleaseProc();
     this->INHERITED::onAbandon();
-}
-
-void GrSurface::setLastOpList(GrOpList* opList) {
-    if (fLastOpList) {
-        // The non-MDB world never closes so we can't check this condition
-#ifdef ENABLE_MDB
-        SkASSERT(fLastOpList->isClosed());
-#endif
-        fLastOpList->clearTarget();
-    }
-
-    SkRefCnt_SafeAssign(fLastOpList, opList);
 }

@@ -14,7 +14,6 @@
 #include "SkImageInfo.h"
 #include "SkRect.h"
 
-class GrOpList;
 class GrRenderTarget;
 class GrSurfacePriv;
 class GrTexture;
@@ -37,7 +36,8 @@ public:
     SkRect getBoundsRect() const { return SkRect::MakeIWH(this->width(), this->height()); }
 
     GrSurfaceOrigin origin() const {
-        SkASSERT(kTopLeft_GrSurfaceOrigin == fDesc.fOrigin || kBottomLeft_GrSurfaceOrigin == fDesc.fOrigin);
+        SkASSERT(kTopLeft_GrSurfaceOrigin == fDesc.fOrigin ||
+                 kBottomLeft_GrSurfaceOrigin == fDesc.fOrigin);
         return fDesc.fOrigin;
     }
 
@@ -55,31 +55,20 @@ public:
     const GrSurfaceDesc& desc() const { return fDesc; }
 
     /**
-     * @return the texture associated with the surface, may be NULL.
+     * @return the texture associated with the surface, may be null.
      */
-    virtual GrTexture* asTexture() { return NULL; }
-    virtual const GrTexture* asTexture() const { return NULL; }
+    virtual GrTexture* asTexture() { return nullptr; }
+    virtual const GrTexture* asTexture() const { return nullptr; }
 
     /**
-     * @return the render target underlying this surface, may be NULL.
+     * @return the render target underlying this surface, may be null.
      */
-    virtual GrRenderTarget* asRenderTarget() { return NULL; }
-    virtual const GrRenderTarget* asRenderTarget() const { return NULL; }
+    virtual GrRenderTarget* asRenderTarget() { return nullptr; }
+    virtual const GrRenderTarget* asRenderTarget() const { return nullptr; }
 
     /** Access methods that are only to be used within Skia code. */
     inline GrSurfacePriv surfacePriv();
     inline const GrSurfacePriv surfacePriv() const;
-
-    typedef void* ReleaseCtx;
-    typedef void (*ReleaseProc)(ReleaseCtx);
-
-    void setRelease(ReleaseProc proc, ReleaseCtx ctx) {
-        fReleaseProc = proc;
-        fReleaseCtx = ctx;
-    }
-
-    void setLastOpList(GrOpList* opList);
-    GrOpList* getLastOpList() { return fLastOpList; }
 
     static size_t WorstCaseSize(const GrSurfaceDesc& desc, bool useNextPow2 = false);
     static size_t ComputeSize(const GrSurfaceDesc& desc, int colorSamplesPerPixel,
@@ -96,12 +85,9 @@ protected:
 
     GrSurface(GrGpu* gpu, const GrSurfaceDesc& desc)
         : INHERITED(gpu)
-        , fDesc(desc)
-        , fReleaseProc(NULL)
-        , fReleaseCtx(NULL)
-        , fLastOpList(nullptr) {
+        , fDesc(desc) {
     }
-    ~GrSurface() override;
+    ~GrSurface() override {}
 
     GrSurfaceDesc fDesc;
 
@@ -109,24 +95,6 @@ protected:
     void onAbandon() override;
 
 private:
-    void invokeReleaseProc() {
-        if (fReleaseProc) {
-            fReleaseProc(fReleaseCtx);
-            fReleaseProc = NULL;
-        }
-    }
-
-    ReleaseProc fReleaseProc;
-    ReleaseCtx  fReleaseCtx;
-
-    // The last opList that wrote to or is currently going to write to this surface
-    // The opList can be closed (e.g., no render target or texture context is currently bound
-    // to this renderTarget or texture).
-    // This back-pointer is required so that we can add a dependancy between
-    // the opList used to create the current contents of this surface
-    // and the opList of a destination surface to which this one is being drawn or copied.
-    GrOpList* fLastOpList;
-
     typedef GrGpuResource INHERITED;
 };
 

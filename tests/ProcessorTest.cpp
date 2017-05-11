@@ -9,6 +9,7 @@
 #include "Test.h"
 
 #if SK_SUPPORT_GPU
+#include <random>
 #include "GrClip.h"
 #include "GrContext.h"
 #include "GrGpuResource.h"
@@ -20,7 +21,6 @@
 #include "glsl/GrGLSLFragmentShaderBuilder.h"
 #include "ops/GrNonAAFillRectOp.h"
 #include "ops/GrTestMeshDrawOp.h"
-#include <random>
 
 namespace {
 class TestOp : public GrTestMeshDrawOp {
@@ -137,7 +137,7 @@ DEF_GPUTEST_FOR_ALL_CONTEXTS(ProcessorRefTest, reporter, ctxInfo) {
     desc.fHeight = 10;
 
     for (int parentCnt = 0; parentCnt < 2; parentCnt++) {
-        sk_sp<GrRenderTargetContext> renderTargetContext(context->makeRenderTargetContext(
+        sk_sp<GrRenderTargetContext> renderTargetContext(context->makeDeferredRenderTargetContext(
                 SkBackingFit::kApprox, 1, 1, kRGBA_8888_GrPixelConfig, nullptr));
         {
             bool texelBufferSupport = context->caps()->shaderCaps()->texelBufferSupport();
@@ -266,11 +266,11 @@ void test_draw_op(GrRenderTargetContext* rtc, sk_sp<GrFragmentProcessor> fp,
                                    nullptr, SkMatrix::I());
     paint.addColorFragmentProcessor(std::move(fp));
     paint.setPorterDuffXPFactory(SkBlendMode::kSrc);
-    GrPipelineBuilder pb(std::move(paint), GrAAType::kNone);
-    auto op =
-            GrNonAAFillRectOp::Make(GrColor_WHITE, SkMatrix::I(),
-                                    SkRect::MakeWH(rtc->width(), rtc->height()), nullptr, nullptr);
-    rtc->addLegacyMeshDrawOp(std::move(pb), GrNoClip(), std::move(op));
+
+    auto op = GrNonAAFillRectOp::Make(std::move(paint), SkMatrix::I(),
+                                      SkRect::MakeWH(rtc->width(), rtc->height()), nullptr, nullptr,
+                                      GrAAType::kNone);
+    rtc->addDrawOp(GrNoClip(), std::move(op));
 }
 
 #include "SkCommandLineFlags.h"
@@ -290,7 +290,7 @@ DEF_GPUTEST_FOR_GL_RENDERING_CONTEXTS(ProcessorOptimizationValidationTest, repor
     // hard-code that value here:
     SkRandom random(seed);
 
-    sk_sp<GrRenderTargetContext> rtc = context->makeRenderTargetContext(
+    sk_sp<GrRenderTargetContext> rtc = context->makeDeferredRenderTargetContext(
             SkBackingFit::kExact, 256, 256, kRGBA_8888_GrPixelConfig, nullptr);
     GrSurfaceDesc desc;
     desc.fWidth = 256;
@@ -350,6 +350,10 @@ DEF_GPUTEST_FOR_GL_RENDERING_CONTEXTS(ProcessorOptimizationValidationTest, repor
         }
         for (int j = 0; j < timesToInvokeFactory; ++j) {
             fp = FPFactory::MakeIdx(i, &testData);
+            if (fp->isBad()) {
+                continue;
+            }
+
             if (!fp->hasConstantOutputForConstantInput() && !fp->preservesOpaqueInput() &&
                 !fp->compatibleWithCoverageAsAlpha()) {
                 continue;

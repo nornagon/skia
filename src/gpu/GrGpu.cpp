@@ -8,6 +8,7 @@
 
 #include "GrGpu.h"
 
+#include "GrBackendSurface.h"
 #include "GrBuffer.h"
 #include "GrCaps.h"
 #include "GrContext.h"
@@ -23,24 +24,6 @@
 #include "GrSurfacePriv.h"
 #include "GrTexturePriv.h"
 #include "SkMathPriv.h"
-
-GrMesh& GrMesh::operator =(const GrMesh& di) {
-    fPrimitiveType  = di.fPrimitiveType;
-    fStartVertex    = di.fStartVertex;
-    fStartIndex     = di.fStartIndex;
-    fVertexCount    = di.fVertexCount;
-    fIndexCount     = di.fIndexCount;
-
-    fInstanceCount          = di.fInstanceCount;
-    fVerticesPerInstance    = di.fVerticesPerInstance;
-    fIndicesPerInstance     = di.fIndicesPerInstance;
-    fMaxInstancesPerDraw    = di.fMaxInstancesPerDraw;
-
-    fVertexBuffer.reset(di.vertexBuffer());
-    fIndexBuffer.reset(di.indexBuffer());
-
-    return *this;
-}
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -192,53 +175,60 @@ GrTexture* GrGpu::createTexture(const GrSurfaceDesc& origDesc, SkBudgeted budget
     return tex;
 }
 
-sk_sp<GrTexture> GrGpu::wrapBackendTexture(const GrBackendTextureDesc& desc,
+sk_sp<GrTexture> GrGpu::wrapBackendTexture(const GrBackendTexture& backendTex,
+                                           GrSurfaceOrigin origin,
+                                           GrBackendTextureFlags flags,
+                                           int sampleCnt,
                                            GrWrapOwnership ownership) {
     this->handleDirtyContext();
-    if (!this->caps()->isConfigTexturable(desc.fConfig)) {
+    if (!this->caps()->isConfigTexturable(backendTex.config())) {
         return nullptr;
     }
-    if ((desc.fFlags & kRenderTarget_GrBackendTextureFlag) &&
-        !this->caps()->isConfigRenderable(desc.fConfig, desc.fSampleCnt > 0)) {
+    if ((flags & kRenderTarget_GrBackendTextureFlag) &&
+        !this->caps()->isConfigRenderable(backendTex.config(), sampleCnt > 0)) {
         return nullptr;
     }
     int maxSize = this->caps()->maxTextureSize();
-    if (desc.fWidth > maxSize || desc.fHeight > maxSize) {
+    if (backendTex.width() > maxSize || backendTex.height() > maxSize) {
         return nullptr;
     }
-    sk_sp<GrTexture> tex = this->onWrapBackendTexture(desc, ownership);
+    sk_sp<GrTexture> tex = this->onWrapBackendTexture(backendTex, origin, flags, sampleCnt,
+                                                      ownership);
     if (!tex) {
         return nullptr;
     }
-    // TODO: defer this and attach dynamically
-    GrRenderTarget* tgt = tex->asRenderTarget();
-    if (tgt && !fContext->resourceProvider()->attachStencilAttachment(tgt)) {
-        return nullptr;
+
+    if (!this->caps()->avoidStencilBuffers()) {
+        // TODO: defer this and attach dynamically
+        GrRenderTarget* tgt = tex->asRenderTarget();
+        if (tgt && !fContext->resourceProvider()->attachStencilAttachment(tgt)) {
+            return nullptr;
+        }
     }
     return tex;
 }
 
-sk_sp<GrRenderTarget> GrGpu::wrapBackendRenderTarget(const GrBackendRenderTargetDesc& desc) {
-    if (!this->caps()->isConfigRenderable(desc.fConfig, desc.fSampleCnt > 0)) {
+sk_sp<GrRenderTarget> GrGpu::wrapBackendRenderTarget(const GrBackendRenderTarget& backendRT,
+                                                     GrSurfaceOrigin origin) {
+    if (!this->caps()->isConfigRenderable(backendRT.config(), backendRT.sampleCnt() > 0)) {
         return nullptr;
     }
     this->handleDirtyContext();
-    return this->onWrapBackendRenderTarget(desc);
+    return this->onWrapBackendRenderTarget(backendRT, origin);
 }
 
-sk_sp<GrRenderTarget> GrGpu::wrapBackendTextureAsRenderTarget(const GrBackendTextureDesc& desc) {
+sk_sp<GrRenderTarget> GrGpu::wrapBackendTextureAsRenderTarget(const GrBackendTexture& tex,
+                                                              GrSurfaceOrigin origin,
+                                                              int sampleCnt) {
     this->handleDirtyContext();
-    if (!(desc.fFlags & kRenderTarget_GrBackendTextureFlag)) {
-      return nullptr;
-    }
-    if (!this->caps()->isConfigRenderable(desc.fConfig, desc.fSampleCnt > 0)) {
+    if (!this->caps()->isConfigRenderable(tex.config(), sampleCnt > 0)) {
         return nullptr;
     }
     int maxSize = this->caps()->maxTextureSize();
-    if (desc.fWidth > maxSize || desc.fHeight > maxSize) {
+    if (tex.width() > maxSize || tex.height() > maxSize) {
         return nullptr;
     }
-    return this->onWrapBackendTextureAsRenderTarget(desc);
+    return this->onWrapBackendTextureAsRenderTarget(tex, origin, sampleCnt);
 }
 
 GrBuffer* GrGpu::createBuffer(size_t size, GrBufferType intendedType,
@@ -249,6 +239,11 @@ GrBuffer* GrGpu::createBuffer(size_t size, GrBufferType intendedType,
         buffer->resourcePriv().removeScratchKey();
     }
     return buffer;
+}
+
+std::unique_ptr<gr_instanced::OpAllocator> GrGpu::createInstancedRenderingAllocator() {
+    SkASSERT(GrCaps::InstancedSupport::kNone != this->caps()->instancedSupport());
+    return this->onCreateInstancedRenderingAllocator();
 }
 
 gr_instanced::InstancedRendering* GrGpu::createInstancedRendering() {
@@ -279,11 +274,6 @@ bool GrGpu::getReadPixelsInfo(GrSurface* srcSurface, int width, int height, size
     SkASSERT(tempDrawInfo);
     SkASSERT(srcSurface);
     SkASSERT(kGpuPrefersDraw_DrawPreference != *drawPreference);
-
-    // We don't allow conversion between integer configs and float/fixed configs.
-    if (GrPixelConfigIsSint(srcSurface->config()) != GrPixelConfigIsSint(readConfig)) {
-        return false;
-    }
 
     // We currently do not support reading into a compressed buffer
     if (GrPixelConfigIsCompressed(readConfig)) {
@@ -323,11 +313,6 @@ bool GrGpu::getWritePixelsInfo(GrSurface* dstSurface, int width, int height,
 
     if (GrPixelConfigIsCompressed(dstSurface->desc().fConfig) &&
         dstSurface->desc().fConfig != srcConfig) {
-        return false;
-    }
-
-    // We don't allow conversion between integer configs and float/fixed configs.
-    if (GrPixelConfigIsSint(dstSurface->config()) != GrPixelConfigIsSint(srcConfig)) {
         return false;
     }
 

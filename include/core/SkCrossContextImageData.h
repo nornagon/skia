@@ -12,6 +12,7 @@
 #include "SkImage.h"
 
 #if SK_SUPPORT_GPU
+#include "GrBackendSurface.h"
 #include "GrExternalTextureData.h"
 #endif
 
@@ -32,37 +33,64 @@ public:
     static std::unique_ptr<SkCrossContextImageData> MakeFromEncoded(
         GrContext*, sk_sp<SkData>, SkColorSpace* dstColorSpace);
 
+    virtual ~SkCrossContextImageData() {}
+
+protected:
+    SkCrossContextImageData() {}
+
 private:
-    SkCrossContextImageData(sk_sp<SkImage> image) : fImage(std::move(image)) {
+    virtual sk_sp<SkImage> makeImage(GrContext*) = 0;
+
+    friend class SkImage;
+};
+
+class SkCCIDImage : public SkCrossContextImageData {
+public:
+    ~SkCCIDImage() override {}
+
+private:
+    SkCCIDImage(sk_sp<SkImage> image) : fImage(std::move(image)) {
         SkASSERT(!fImage->isTextureBacked());
     }
 
-#if SK_SUPPORT_GPU
-    SkCrossContextImageData(const GrBackendTextureDesc& desc,
-                            std::unique_ptr<GrExternalTextureData> textureData,
-                            SkAlphaType alphaType, sk_sp<SkColorSpace> colorSpace)
-            : fAlphaType(alphaType)
-            , fColorSpace(std::move(colorSpace))
-            , fDesc(desc)
-            , fTextureData(std::move(textureData)) {
-        // Point our texture desc at our copy of the backend information
-        fDesc.fTextureHandle = fTextureData->getBackendObject();
+    sk_sp<SkImage> makeImage(GrContext*) override {
+        return fImage;
     }
-#endif
 
-    // For non-GPU backed images
     sk_sp<SkImage> fImage;
 
+    friend class SkCrossContextImageData;
+    friend class SkImage;
+};
+
 #if SK_SUPPORT_GPU
+class SkCCIDBackendTexture : public SkCrossContextImageData {
+public:
+    ~SkCCIDBackendTexture() override {}
+
+private:
+    SkCCIDBackendTexture(const GrBackendTexture& backendTex,
+                         GrSurfaceOrigin origin,
+                         std::unique_ptr<GrExternalTextureData> textureData,
+                         SkAlphaType alphaType, sk_sp<SkColorSpace> colorSpace)
+            : fAlphaType(alphaType)
+            , fColorSpace(std::move(colorSpace))
+            , fBackendTex(backendTex)
+            , fOrigin(origin)
+            , fTextureData(std::move(textureData)) {}
+
+    sk_sp<SkImage> makeImage(GrContext*) override;
+
     // GPU-backed images store some generic information (needed to reconstruct the SkImage),
     // and some backend-specific info (to reconstruct the texture).
     SkAlphaType fAlphaType;
     sk_sp<SkColorSpace> fColorSpace;
-    GrBackendTextureDesc fDesc;
+    GrBackendTexture fBackendTex;
+    GrSurfaceOrigin fOrigin;
     std::unique_ptr<GrExternalTextureData> fTextureData;
-#endif
 
-    friend class SkImage;
+    friend class SkCrossContextImageData;
 };
+#endif
 
 #endif

@@ -15,16 +15,17 @@
 #include "GrTextureProducer.h"
 #include "GrTypes.h"
 #include "GrXferProcessor.h"
+#include "instanced/InstancedRendering.h"
 #include "SkPath.h"
 #include "SkTArray.h"
 #include <map>
 
+class GrBackendRenderTarget;
 class GrBuffer;
 class GrContext;
 struct GrContextOptions;
 class GrGLContext;
-class GrMesh;
-class GrNonInstancedVertices;
+struct GrMesh;
 class GrPath;
 class GrPathRange;
 class GrPathRenderer;
@@ -39,7 +40,11 @@ class GrStencilSettings;
 class GrSurface;
 class GrTexture;
 
-namespace gr_instanced { class InstancedRendering; }
+namespace gr_instanced {
+    class InstancedOp;
+    class InstancedRendering;
+    class OpAllocator;
+}
 
 class GrGpu : public SkRefCnt {
 public:
@@ -124,17 +129,20 @@ public:
     /**
      * Implements GrResourceProvider::wrapBackendTexture
      */
-    sk_sp<GrTexture> wrapBackendTexture(const GrBackendTextureDesc&, GrWrapOwnership);
+    sk_sp<GrTexture> wrapBackendTexture(const GrBackendTexture&, GrSurfaceOrigin,
+                                        GrBackendTextureFlags, int sampleCnt, GrWrapOwnership);
 
     /**
      * Implements GrResourceProvider::wrapBackendRenderTarget
      */
-    sk_sp<GrRenderTarget> wrapBackendRenderTarget(const GrBackendRenderTargetDesc&);
+    sk_sp<GrRenderTarget> wrapBackendRenderTarget(const GrBackendRenderTarget&, GrSurfaceOrigin);
 
     /**
      * Implements GrResourceProvider::wrapBackendTextureAsRenderTarget
      */
-    sk_sp<GrRenderTarget> wrapBackendTextureAsRenderTarget(const GrBackendTextureDesc&);
+    sk_sp<GrRenderTarget> wrapBackendTextureAsRenderTarget(const GrBackendTexture&,
+                                                           GrSurfaceOrigin,
+                                                           int sampleCnt);
 
     /**
      * Creates a buffer in GPU memory. For a client-side buffer use GrBuffer::CreateCPUBacked.
@@ -152,6 +160,7 @@ public:
     /**
      * Creates an instanced rendering object if it is supported on this platform.
      */
+    std::unique_ptr<gr_instanced::OpAllocator> createInstancedRenderingAllocator();
     gr_instanced::InstancedRendering* createInstancedRendering();
 
     /**
@@ -376,12 +385,15 @@ public:
     virtual void deleteFence(GrFence) const = 0;
 
     virtual sk_sp<GrSemaphore> SK_WARN_UNUSED_RESULT makeSemaphore() = 0;
-    virtual void insertSemaphore(sk_sp<GrSemaphore> semaphore) = 0;
+    virtual void insertSemaphore(sk_sp<GrSemaphore> semaphore, bool flush = false) = 0;
     virtual void waitSemaphore(sk_sp<GrSemaphore> semaphore) = 0;
 
-    // Ensures that all queued up driver-level commands have been sent to the GPU. For example, on
-    // OpenGL, this calls glFlush.
-    virtual void flush() = 0;
+    /**
+     *  Put this texture in a safe and known state for use across multiple GrContexts. Depending on
+     *  the backend, this may return a GrSemaphore. If so, other contexts should wait on that
+     *  semaphore before using this texture.
+     */
+    virtual sk_sp<GrSemaphore> prepareTextureForCrossContextUsage(GrTexture*) = 0;
 
     ///////////////////////////////////////////////////////////////////////////
     // Debugging and Stats
@@ -542,13 +554,23 @@ private:
                                                  SkBudgeted budgeted,
                                                  const SkTArray<GrMipLevel>& texels) = 0;
 
-    virtual sk_sp<GrTexture> onWrapBackendTexture(const GrBackendTextureDesc&, GrWrapOwnership) = 0;
-    virtual sk_sp<GrRenderTarget> onWrapBackendRenderTarget(const GrBackendRenderTargetDesc&) = 0;
-    virtual sk_sp<GrRenderTarget> onWrapBackendTextureAsRenderTarget(const GrBackendTextureDesc&)=0;
+    virtual sk_sp<GrTexture> onWrapBackendTexture(const GrBackendTexture&,
+                                                  GrSurfaceOrigin,
+                                                  GrBackendTextureFlags,
+                                                  int sampleCnt,
+                                                  GrWrapOwnership) = 0;
+    virtual sk_sp<GrRenderTarget> onWrapBackendRenderTarget(const GrBackendRenderTarget&,
+                                                            GrSurfaceOrigin) = 0;
+    virtual sk_sp<GrRenderTarget> onWrapBackendTextureAsRenderTarget(const GrBackendTexture&,
+                                                                     GrSurfaceOrigin,
+                                                                     int sampleCnt)=0;
     virtual GrBuffer* onCreateBuffer(size_t size, GrBufferType intendedType, GrAccessPattern,
                                      const void* data) = 0;
 
     virtual gr_instanced::InstancedRendering* onCreateInstancedRendering() = 0;
+    virtual std::unique_ptr<gr_instanced::OpAllocator> onCreateInstancedRenderingAllocator() {
+        return nullptr;
+    }
 
     virtual bool onIsACopyNeededForTextureParams(GrTextureProxy* proxy, const GrSamplerParams&,
                                                  GrTextureProducer::CopyParams*,
@@ -616,7 +638,7 @@ private:
     GrContext*                             fContext;
 
     friend class GrPathRendering;
-    friend class gr_instanced::InstancedRendering;
+    friend class gr_instanced::InstancedOp; // for xferBarrier
     typedef SkRefCnt INHERITED;
 };
 

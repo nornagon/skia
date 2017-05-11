@@ -13,7 +13,9 @@
 
 #include "SkRect.h"
 
+class GrBackendTexture;
 class GrCaps;
+class GrOpList;
 class GrRenderTargetOpList;
 class GrRenderTargetProxy;
 class GrResourceProvider;
@@ -21,8 +23,6 @@ class GrSurfaceContext;
 class GrSurfaceProxyPriv;
 class GrTextureOpList;
 class GrTextureProxy;
-
-//#define SK_DISABLE_DEFERRED_PROXIES 1
 
 // This class replicates the functionality GrIORef<GrSurface> but tracks the
 // utilitization for later resource allocation (for the deferred case) and
@@ -123,7 +123,7 @@ protected:
 
 private:
     // This class is used to manage conversion of refs to pending reads/writes.
-    friend class GrGpuResourceRef;
+    friend class GrTextureProxyRef;
     template <typename, GrIOType> friend class GrPendingIOResource;
 
     void addPendingRead() const {
@@ -190,7 +190,7 @@ public:
                                               const GrSurfaceDesc&, SkBudgeted,
                                               const void* srcData, size_t rowBytes);
 
-    static sk_sp<GrSurfaceProxy> MakeWrappedBackend(GrContext*, GrBackendTextureDesc&);
+    static sk_sp<GrTextureProxy> MakeWrappedBackend(GrContext*, GrBackendTexture&, GrSurfaceOrigin);
 
     const GrSurfaceDesc& desc() const { return fDesc; }
 
@@ -283,7 +283,7 @@ public:
     GrTextureOpList* getLastTextureOpList();
 
     /**
-     * Retrieves the amount of GPU memory that will be or currently is used by this resource 
+     * Retrieves the amount of GPU memory that will be or currently is used by this resource
      * in bytes. It is approximate since we aren't aware of additional padding or copies made
      * by the driver.
      *

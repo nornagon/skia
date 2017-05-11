@@ -22,6 +22,7 @@ protected:
     virtual void attachToContext(GrContext*) = 0;
 
     friend class SkCrossContextImageData;
+    friend class SkCCIDBackendTexture;
     friend class SkImage;
 };
 

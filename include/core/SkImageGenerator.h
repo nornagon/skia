@@ -35,22 +35,28 @@ public:
     uint32_t uniqueID() const { return fUniqueID; }
 
     /**
-     *  Return a ref to the encoded (i.e. compressed) representation,
-     *  of this data. If the GrContext is non-null, then the caller is only interested in
-     *  gpu-specific formats, so the impl may return null even if they have encoded data,
-     *  assuming they know it is not suitable for the gpu.
+     *  Return a ref to the encoded (i.e. compressed) representation
+     *  of this data.
      *
      *  If non-NULL is returned, the caller is responsible for calling
      *  unref() on the data when it is finished.
      */
-    SkData* refEncodedData(GrContext* ctx = nullptr) {
-        return this->onRefEncodedData(ctx);
+    SkData* refEncodedData() {
+        return this->onRefEncodedData();
     }
 
     /**
      *  Return the ImageInfo associated with this generator.
      */
     const SkImageInfo& getInfo() const { return fInfo; }
+
+    /**
+     *  Can this generator be used to produce images that will be drawable to the specified context
+     *  (or to CPU, if context is nullptr)?
+     */
+    bool isValid(GrContext* context) const {
+        return this->onIsValid(context);
+    }
 
     /**
      *  Decode into the given pixels, a block of memory of size at
@@ -163,10 +169,12 @@ protected:
 
     SkImageGenerator(const SkImageInfo& info, uint32_t uniqueId = kNeedNewImageUniqueID);
 
-    virtual SkData* onRefEncodedData(GrContext* ctx);
+    virtual SkData* onRefEncodedData();
 
     virtual bool onGetPixels(const SkImageInfo& info, void* pixels, size_t rowBytes,
                              SkPMColor ctable[], int* ctableCount);
+
+    virtual bool onIsValid(GrContext*) const;
 
     virtual bool onQueryYUV8(SkYUVSizeInfo*, SkYUVColorSpace*) const {
         return false;
@@ -193,15 +201,16 @@ protected:
     }
 
 #if SK_SUPPORT_GPU
+    virtual bool onCanGenerateTexture() const { return false; }
     virtual sk_sp<GrTextureProxy> onGenerateTexture(GrContext*, const SkImageInfo&,
-                                                    const SkIPoint&);
+                                                    const SkIPoint&);   // returns nullptr
 #endif
 
 private:
     const SkImageInfo fInfo;
     const uint32_t fUniqueID;
 
-    friend class SkImageCacherator;
+    friend class SkImage_Lazy;
 
     // This is our default impl, which may be different on different platforms.
     // It is called from NewFromEncoded() after it has checked for any runtime factory.

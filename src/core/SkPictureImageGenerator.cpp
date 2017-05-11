@@ -7,6 +7,7 @@
 
 #include "SkImage_Base.h"
 #include "SkCanvas.h"
+#include "SkColorSpaceXformCanvas.h"
 #include "SkMakeUnique.h"
 #include "SkMatrix.h"
 #include "SkPaint.h"
@@ -59,19 +60,32 @@ SkPictureImageGenerator::SkPictureImageGenerator(const SkImageInfo& info, sk_sp<
 
 bool SkPictureImageGenerator::onGetPixels(const SkImageInfo& info, void* pixels, size_t rowBytes,
                                           SkPMColor ctable[], int* ctableCount) {
-    if (ctable || ctableCount) {
+    // Rely on SkCanvas factory to know what configs can and cannot be drawn into.
+    auto canvas = SkCanvas::MakeRasterDirect(info, pixels, rowBytes);
+    if (!canvas) {
         return false;
     }
+    canvas->clear(0);
+    canvas->drawPicture(fPicture, &fMatrix, fPaint.getMaybeNull());
+    return true;
+}
 
-    SkBitmap bitmap;
-    if (!bitmap.installPixels(info, pixels, rowBytes)) {
-        return false;
+bool SkPictureImageGenerator::onGetPixels(const SkImageInfo& info, void* pixels, size_t rowBytes,
+                                          const Options& opts) {
+    // No need to use the xform canvas if we want fully color correct behavior or if we do not
+    // have a destination color space.
+    if (SkTransferFunctionBehavior::kRespect == opts.fBehavior || !info.colorSpace()) {
+        return this->onGetPixels(info, pixels, rowBytes, opts.fColorTable, opts.fColorTableCount);
     }
 
-    bitmap.eraseColor(SK_ColorTRANSPARENT);
-    SkCanvas canvas(bitmap, SkSurfaceProps(0, kUnknown_SkPixelGeometry));
-    canvas.drawPicture(fPicture.get(), &fMatrix, fPaint.getMaybeNull());
+    auto canvas = SkCanvas::MakeRasterDirect(info.makeColorSpace(nullptr), pixels, rowBytes);
+    if (!canvas) {
+        return false;
+    }
+    canvas->clear(0);
 
+    auto xformCanvas = SkCreateColorSpaceXformCanvas(canvas.get(), info.refColorSpace());
+    xformCanvas->drawPicture(fPicture, &fMatrix, fPaint.getMaybeNull());
     return true;
 }
 

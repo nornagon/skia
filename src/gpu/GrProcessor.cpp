@@ -129,6 +129,10 @@ void GrProcessor::operator delete(void* target) {
 ///////////////////////////////////////////////////////////////////////////////
 
 void GrResourceIOProcessor::addTextureSampler(const TextureSampler* access) {
+    if (access->isBad()) {
+        this->markAsBad();
+    }
+
     fTextureSamplers.push_back(access);
 }
 
@@ -204,18 +208,6 @@ bool GrResourceIOProcessor::hasSameSamplersAndAccesses(const GrResourceIOProcess
 
 GrResourceIOProcessor::TextureSampler::TextureSampler() {}
 
-GrResourceIOProcessor::TextureSampler::TextureSampler(GrTexture* texture,
-                                                      const GrSamplerParams& params) {
-    this->reset(texture, params);
-}
-
-GrResourceIOProcessor::TextureSampler::TextureSampler(GrTexture* texture,
-                                                      GrSamplerParams::FilterMode filterMode,
-                                                      SkShader::TileMode tileXAndY,
-                                                      GrShaderFlags visibility) {
-    this->reset(texture, filterMode, tileXAndY, visibility);
-}
-
 GrResourceIOProcessor::TextureSampler::TextureSampler(GrResourceProvider* resourceProvider,
                                                       sk_sp<GrTextureProxy> proxy,
                                                       const GrSamplerParams& params) {
@@ -230,16 +222,7 @@ GrResourceIOProcessor::TextureSampler::TextureSampler(GrResourceProvider* resour
     this->reset(resourceProvider, std::move(proxy), filterMode, tileXAndY, visibility);
 }
 
-void GrResourceIOProcessor::TextureSampler::reset(GrTexture* texture,
-                                                  const GrSamplerParams& params,
-                                                  GrShaderFlags visibility) {
-    SkASSERT(texture);
-    fTexture.set(SkRef(texture), kRead_GrIOType);
-    fParams = params;
-    fParams.setFilterMode(SkTMin(params.filterMode(), texture->texturePriv().highestFilterMode()));
-    fVisibility = visibility;
-}
-
+// MDB TODO: remove this!
 void GrResourceIOProcessor::TextureSampler::reset(GrTexture* texture,
                                                   GrSamplerParams::FilterMode filterMode,
                                                   SkShader::TileMode tileXAndY,
@@ -255,13 +238,17 @@ void GrResourceIOProcessor::TextureSampler::reset(GrResourceProvider* resourcePr
                                                   sk_sp<GrTextureProxy> proxy,
                                                   const GrSamplerParams& params,
                                                   GrShaderFlags visibility) {
+    fParams = params;
+
     // For now, end the deferral at this time. Once all the TextureSamplers are swapped over
     // to taking a GrSurfaceProxy just use the IORefs on the proxy
     GrTexture* texture = proxy->instantiate(resourceProvider);
-    SkASSERT(texture);
-    fTexture.set(SkRef(texture), kRead_GrIOType);
-    fParams = params;
-    fParams.setFilterMode(SkTMin(params.filterMode(), texture->texturePriv().highestFilterMode()));
+    if (texture) {
+        fTexture.set(SkRef(texture), kRead_GrIOType);
+        SkASSERT(texture->texturePriv().highestFilterMode() == proxy->highestFilterMode());
+        fParams.setFilterMode(SkTMin(params.filterMode(), proxy->highestFilterMode()));
+    }
+
     fVisibility = visibility;
 }
 
@@ -273,9 +260,12 @@ void GrResourceIOProcessor::TextureSampler::reset(GrResourceProvider* resourcePr
     // For now, end the deferral at this time. Once all the TextureSamplers are swapped over
     // to taking a GrSurfaceProxy just use the IORefs on the proxy
     GrTexture* texture = proxy->instantiate(resourceProvider);
-    SkASSERT(texture);
-    fTexture.set(SkRef(texture), kRead_GrIOType);
-    filterMode = SkTMin(filterMode, texture->texturePriv().highestFilterMode());
+    if (texture) {
+        fTexture.set(SkRef(texture), kRead_GrIOType);
+        SkASSERT(texture->texturePriv().highestFilterMode() == proxy->highestFilterMode());
+        filterMode = SkTMin(filterMode, proxy->highestFilterMode());
+    }
+
     fParams.reset(tileXAndY, filterMode);
     fVisibility = visibility;
 }

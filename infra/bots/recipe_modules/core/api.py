@@ -36,8 +36,8 @@ class SkiaApi(recipe_api.RecipeApi):
   def update_repo(self, parent_dir, repo):
     """Update an existing repo. This is safe to call without gen_steps."""
     repo_path = parent_dir.join(repo.name)
-    if self.m.path.exists(repo_path):  # pragma: nocover
-      if self.m.platform.is_win:
+    if self.m.path.exists(repo_path) or self._test_data.enabled:
+      if 'Win' in self.m.properties.get('buildername', ''):
         git = 'git.bat'
       else:
         git = 'git'
@@ -94,6 +94,10 @@ class SkiaApi(recipe_api.RecipeApi):
     m = gclient_cfg.got_revision_mapping
     m[main_name] = 'got_revision'
     patch_root = main_name
+    patch_repo = main.url
+    if self.m.properties.get('patch_repo'):
+      patch_repo = self.m.properties['patch_repo']
+      patch_root = patch_repo.split('/')[-1].rstrip('.git')
 
     if self.m.vars.need_pdfium_checkout:
       # Skia is a DEP of PDFium; the 'revision' property is a Skia revision, and
@@ -106,6 +110,7 @@ class SkiaApi(recipe_api.RecipeApi):
       gclient_cfg.patch_projects['skia'] = (skia_dep_path, 'HEAD')
       gclient_cfg.revisions[skia_dep_path] = self.m.properties['revision']
       m[skia_dep_path] = 'got_revision'
+      patch_repo = 'https://skia.googlesource.com/skia.git'
       patch_root = skia_dep_path
 
     if self.m.vars.need_flutter_checkout:
@@ -121,6 +126,7 @@ class SkiaApi(recipe_api.RecipeApi):
       gclient_cfg.patch_projects['skia'] = (skia_dep_path, 'HEAD')
       gclient_cfg.revisions[skia_dep_path] = self.m.properties['revision']
       m[skia_dep_path] = 'got_revision'
+      patch_repo = 'https://skia.googlesource.com/skia.git'
       patch_root = skia_dep_path
 
     self.update_repo(self.m.vars.checkout_root, main)
@@ -128,10 +134,10 @@ class SkiaApi(recipe_api.RecipeApi):
     # TODO(rmistry): Remove the below block after there is a solution for
     #                crbug.com/616443
     entries_file = self.m.vars.checkout_root.join('.gclient_entries')
-    if self.m.path.exists(entries_file):
+    if self.m.path.exists(entries_file) or self._test_data.enabled:
       self.m.file.remove('remove %s' % entries_file,
                          entries_file,
-                         infra_step=True)  # pragma: no cover
+                         infra_step=True)
 
     if self.m.vars.need_chromium_checkout:
       chromium = gclient_cfg.solutions.add()
@@ -150,6 +156,7 @@ class SkiaApi(recipe_api.RecipeApi):
           self.m.bot_update._issue,
           self.m.bot_update._patchset,
       )
+      self.m.bot_update._repository = patch_repo
 
     self.m.gclient.c = gclient_cfg
     with self.m.step.context({'cwd': self.m.vars.checkout_root}):

@@ -15,8 +15,8 @@
 
 ////////////////////////////////////////////////////////////////////////////////
 
-GrTextureOpList::GrTextureOpList(GrTextureProxy* tex, GrGpu* gpu, GrAuditTrail* auditTrail)
-    : INHERITED(tex, auditTrail)
+GrTextureOpList::GrTextureOpList(sk_sp<GrTextureProxy> proxy, GrGpu* gpu, GrAuditTrail* auditTrail)
+    : INHERITED(std::move(proxy), auditTrail)
     , fGpu(SkRef(gpu)) {
 }
 
@@ -42,6 +42,11 @@ void GrTextureOpList::dump() const {
                     clippedBounds.fBottom);
     }
 }
+
+void GrTextureOpList::validateTargetsSingleRenderTarget() const {
+    SkASSERT(1 == fRecordedOps.count() || 0 == fRecordedOps.count());
+}
+
 #endif
 
 void GrTextureOpList::prepareOps(GrOpFlushState* flushState) {
@@ -76,6 +81,7 @@ void GrTextureOpList::reset() {
 
 ////////////////////////////////////////////////////////////////////////////////
 
+// MDB TODO: fuse with GrRenderTargetOpList::copySurface
 bool GrTextureOpList::copySurface(GrResourceProvider* resourceProvider,
                                   GrSurfaceProxy* dst,
                                   GrSurfaceProxy* src,
@@ -103,7 +109,7 @@ void GrTextureOpList::recordOp(std::unique_ptr<GrOp> op,
     SkASSERT(!this->isClosed());
 
     GR_AUDIT_TRAIL_ADD_OP(fAuditTrail, op.get(), resourceUniqueID, proxyUniqueID);
-    GrOP_INFO("Re-Recording (%s, B%u)\n"
+    GrOP_INFO("Re-Recording (%s, opID: %u)\n"
         "\tBounds LRTB (%f, %f, %f, %f)\n",
         op->name(),
         op->uniqueID(),

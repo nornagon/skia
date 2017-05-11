@@ -6,6 +6,7 @@
  */
 
 #include "GrRenderTargetContext.h"
+#include "../private/GrAuditTrail.h"
 #include "GrAppliedClip.h"
 #include "GrColor.h"
 #include "GrContextPriv.h"
@@ -26,10 +27,12 @@
 #include "instanced/InstancedRendering.h"
 #include "ops/GrClearOp.h"
 #include "ops/GrClearStencilClipOp.h"
-#include "ops/GrDrawOp.h"
+#include "ops/GrDiscardOp.h"
 #include "ops/GrDrawAtlasOp.h"
+#include "ops/GrDrawOp.h"
 #include "ops/GrDrawVerticesOp.h"
 #include "ops/GrLatticeOp.h"
+#include "ops/GrNonAAFillRectOp.h"
 #include "ops/GrOp.h"
 #include "ops/GrOvalOpFactory.h"
 #include "ops/GrRectOpFactory.h"
@@ -38,7 +41,6 @@
 #include "ops/GrStencilPathOp.h"
 #include "text/GrAtlasTextContext.h"
 #include "text/GrStencilAndCoverTextContext.h"
-#include "../private/GrAuditTrail.h"
 
 #define ASSERT_OWNED_RESOURCE(R) SkASSERT(!(R) || (R)->getContext() == this->drawingManager()->getContext())
 #define ASSERT_SINGLE_OWNER \
@@ -50,8 +52,6 @@
 #define RETURN_FALSE_IF_ABANDONED  if (this->drawingManager()->wasAbandoned()) { return false; }
 #define RETURN_FALSE_IF_ABANDONED_PRIV  if (fRenderTargetContext->drawingManager()->wasAbandoned()) { return false; }
 #define RETURN_NULL_IF_ABANDONED   if (this->drawingManager()->wasAbandoned()) { return nullptr; }
-
-using gr_instanced::InstancedRendering;
 
 class AutoCheckFlush {
 public:
@@ -81,7 +81,7 @@ GrRenderTargetContext::GrRenderTargetContext(GrContext* context,
                                              GrSingleOwner* singleOwner)
     : GrSurfaceContext(context, drawingMgr, std::move(colorSpace), auditTrail, singleOwner)
     , fRenderTargetProxy(std::move(rtp))
-    , fOpList(SkSafeRef(fRenderTargetProxy->getLastRenderTargetOpList()))
+    , fOpList(sk_ref_sp(fRenderTargetProxy->getLastRenderTargetOpList()))
     , fInstancedPipelineInfo(fRenderTargetProxy.get())
     , fColorXformFromSRGB(nullptr)
     , fSurfaceProps(SkSurfacePropsCopyOrDefault(surfaceProps)) {
@@ -99,14 +99,13 @@ void GrRenderTargetContext::validate() const {
     fRenderTargetProxy->validate(fContext);
 
     if (fOpList && !fOpList->isClosed()) {
-        SkASSERT(fRenderTargetProxy->getLastOpList() == fOpList);
+        SkASSERT(fRenderTargetProxy->getLastOpList() == fOpList.get());
     }
 }
 #endif
 
 GrRenderTargetContext::~GrRenderTargetContext() {
     ASSERT_SINGLE_OWNER
-    SkSafeUnref(fOpList);
 }
 
 GrTextureProxy* GrRenderTargetContext::asTextureProxy() {
@@ -122,13 +121,13 @@ GrRenderTargetOpList* GrRenderTargetContext::getOpList() {
     SkDEBUGCODE(this->validate();)
 
     if (!fOpList || fOpList->isClosed()) {
-        fOpList = this->drawingManager()->newOpList(fRenderTargetProxy.get());
+        fOpList = this->drawingManager()->newRTOpList(fRenderTargetProxy);
     }
 
-    return fOpList;
+    return fOpList.get();
 }
 
-// TODO: move this (and GrTextContext::copy) to GrSurfaceContext?
+// MDB TODO: move this (and GrTextContext::copy) to GrSurfaceContext?
 bool GrRenderTargetContext::onCopy(GrSurfaceProxy* srcProxy,
                                    const SkIRect& srcRect,
                                    const SkIPoint& dstPoint) {
@@ -138,7 +137,7 @@ bool GrRenderTargetContext::onCopy(GrSurfaceProxy* srcProxy,
     GR_AUDIT_TRAIL_AUTO_FRAME(fAuditTrail, "GrRenderTargetContext::onCopy");
 
     return this->getOpList()->copySurface(fContext->resourceProvider(),
-                                          fRenderTargetProxy.get(), srcProxy, srcRect, dstPoint);
+                                          this, srcProxy, srcRect, dstPoint);
 }
 
 void GrRenderTargetContext::drawText(const GrClip& clip, const SkPaint& skPaint,
@@ -192,7 +191,15 @@ void GrRenderTargetContext::discard() {
 
     AutoCheckFlush acf(this->drawingManager());
 
-    this->getOpList()->discard(this);
+    // Currently this just inserts a discard op. However, once in MDB this can remove all the
+    // previously recorded ops and change the load op to discard.
+    if (this->caps()->discardRenderTargetSupport()) {
+        std::unique_ptr<GrOp> op(GrDiscardOp::Make(this));
+        if (!op) {
+            return;
+        }
+        this->getOpList()->addOp(std::move(op), this);
+    }
 }
 
 void GrRenderTargetContext::clear(const SkIRect* rect,
@@ -429,9 +436,9 @@ bool GrRenderTargetContext::drawFilledRect(const GrClip& clip,
 
     if (GrCaps::InstancedSupport::kNone != fContext->caps()->instancedSupport() &&
         (!ss || ss->isDisabled(false))) {
-        InstancedRendering* ir = this->getOpList()->instancedRendering();
-        std::unique_ptr<GrDrawOp> op = ir->recordRect(croppedRect, viewMatrix, std::move(paint), aa,
-                                                      fInstancedPipelineInfo);
+        gr_instanced::OpAllocator* oa = this->drawingManager()->instancingAllocator();
+        std::unique_ptr<GrDrawOp> op = oa->recordRect(croppedRect, viewMatrix, std::move(paint),
+                                                      aa, fInstancedPipelineInfo);
         if (op) {
             this->addDrawOp(clip, std::move(op));
             return true;
@@ -732,8 +739,8 @@ void GrRenderTargetContext::fillRectToRect(const GrClip& clip,
     AutoCheckFlush acf(this->drawingManager());
 
     if (GrCaps::InstancedSupport::kNone != fContext->caps()->instancedSupport()) {
-        InstancedRendering* ir = this->getOpList()->instancedRendering();
-        std::unique_ptr<GrDrawOp> op(ir->recordRect(croppedRect, viewMatrix, std::move(paint),
+        gr_instanced::OpAllocator* oa = this->drawingManager()->instancingAllocator();
+        std::unique_ptr<GrDrawOp> op(oa->recordRect(croppedRect, viewMatrix, std::move(paint),
                                                     croppedLocalRect, aa, fInstancedPipelineInfo));
         if (op) {
             this->addDrawOp(clip, std::move(op));
@@ -788,8 +795,8 @@ void GrRenderTargetContext::fillRectWithLocalMatrix(const GrClip& clip,
     AutoCheckFlush acf(this->drawingManager());
 
     if (GrCaps::InstancedSupport::kNone != fContext->caps()->instancedSupport()) {
-        InstancedRendering* ir = this->getOpList()->instancedRendering();
-        std::unique_ptr<GrDrawOp> op(ir->recordRect(croppedRect, viewMatrix, std::move(paint),
+        gr_instanced::OpAllocator* oa = this->drawingManager()->instancingAllocator();
+        std::unique_ptr<GrDrawOp> op(oa->recordRect(croppedRect, viewMatrix, std::move(paint),
                                                     localMatrix, aa, fInstancedPipelineInfo));
         if (op) {
             this->addDrawOp(clip, std::move(op));
@@ -940,9 +947,9 @@ void GrRenderTargetContext::drawRRect(const GrClip& origClip,
 
     if (GrCaps::InstancedSupport::kNone != fContext->caps()->instancedSupport() &&
         stroke.isFillStyle()) {
-        InstancedRendering* ir = this->getOpList()->instancedRendering();
+        gr_instanced::OpAllocator* oa = this->drawingManager()->instancingAllocator();
         std::unique_ptr<GrDrawOp> op(
-                ir->recordRRect(rrect, viewMatrix, std::move(paint), aa, fInstancedPipelineInfo));
+                oa->recordRRect(rrect, viewMatrix, std::move(paint), aa, fInstancedPipelineInfo));
         if (op) {
             this->addDrawOp(*clip, std::move(op));
             return;
@@ -978,8 +985,8 @@ void GrRenderTargetContext::drawShadowRRect(const GrClip& clip,
                                             GrPaint&& paint,
                                             const SkMatrix& viewMatrix,
                                             const SkRRect& rrect,
-                                            SkScalar blurRadius,
-                                            const GrStyle& style) {
+                                            SkScalar blurWidth,
+                                            SkScalar insetWidth) {
     ASSERT_SINGLE_OWNER
     RETURN_IF_ABANDONED
     SkDEBUGCODE(this->validate();)
@@ -988,15 +995,11 @@ void GrRenderTargetContext::drawShadowRRect(const GrClip& clip,
         return;
     }
 
-    SkASSERT(!style.pathEffect()); // this should've been devolved to a path in SkGpuDevice
-
     AutoCheckFlush acf(this->drawingManager());
-    const SkStrokeRec stroke = style.strokeRec();
     // TODO: add instancing support?
 
-    const GrShaderCaps* shaderCaps = fContext->caps()->shaderCaps();
-    std::unique_ptr<GrLegacyMeshDrawOp> op = GrShadowRRectOp::Make(
-            paint.getColor(), viewMatrix, rrect, blurRadius, stroke, shaderCaps);
+    std::unique_ptr<GrLegacyMeshDrawOp> op = GrShadowRRectOp::Make(paint.getColor(), viewMatrix,
+                                                                   rrect, blurWidth, insetWidth);
     if (op) {
         GrPipelineBuilder pipelineBuilder(std::move(paint), GrAAType::kNone);
         this->addLegacyMeshDrawOp(std::move(pipelineBuilder), clip, std::move(op));
@@ -1016,8 +1019,8 @@ bool GrRenderTargetContext::drawFilledDRRect(const GrClip& clip,
     SkASSERT(!origOuter.isEmpty());
 
     if (GrCaps::InstancedSupport::kNone != fContext->caps()->instancedSupport()) {
-        InstancedRendering* ir = this->getOpList()->instancedRendering();
-        std::unique_ptr<GrDrawOp> op(ir->recordDRRect(
+        gr_instanced::OpAllocator* oa = this->drawingManager()->instancingAllocator();
+        std::unique_ptr<GrDrawOp> op(oa->recordDRRect(
                 origOuter, origInner, viewMatrix, std::move(paint), aa, fInstancedPipelineInfo));
         if (op) {
             this->addDrawOp(clip, std::move(op));
@@ -1165,9 +1168,9 @@ void GrRenderTargetContext::drawOval(const GrClip& clip,
 
     if (GrCaps::InstancedSupport::kNone != fContext->caps()->instancedSupport() &&
         stroke.isFillStyle()) {
-        InstancedRendering* ir = this->getOpList()->instancedRendering();
+        gr_instanced::OpAllocator* oa = this->drawingManager()->instancingAllocator();
         std::unique_ptr<GrDrawOp> op(
-                ir->recordOval(oval, viewMatrix, std::move(paint), aa, fInstancedPipelineInfo));
+                oa->recordOval(oval, viewMatrix, std::move(paint), aa, fInstancedPipelineInfo));
         if (op) {
             this->addDrawOp(clip, std::move(op));
             return;
@@ -1270,14 +1273,10 @@ void GrRenderTargetContext::drawNonAAFilledRect(const GrClip& clip,
                                                 const GrUserStencilSettings* ss,
                                                 GrAAType hwOrNoneAAType) {
     SkASSERT(GrAAType::kCoverage != hwOrNoneAAType);
-    SkASSERT(hwOrNoneAAType == GrAAType::kNone || this->isStencilBufferMultisampled());
-    std::unique_ptr<GrLegacyMeshDrawOp> op = GrRectOpFactory::MakeNonAAFill(
-            paint.getColor(), viewMatrix, rect, localRect, localMatrix);
-    GrPipelineBuilder pipelineBuilder(std::move(paint), hwOrNoneAAType);
-    if (ss) {
-        pipelineBuilder.setUserStencil(ss);
-    }
-    this->addLegacyMeshDrawOp(std::move(pipelineBuilder), clip, std::move(op));
+    SkASSERT(GrAAType::kNone == hwOrNoneAAType || this->isStencilBufferMultisampled());
+    std::unique_ptr<GrDrawOp> op = GrNonAAFillRectOp::Make(
+            std::move(paint), viewMatrix, rect, localRect, localMatrix, hwOrNoneAAType, ss);
+    this->addDrawOp(clip, std::move(op));
 }
 
 // Can 'path' be drawn as a pair of filled nested rectangles?
@@ -1416,8 +1415,7 @@ bool GrRenderTargetContextPriv::drawAndStencilPath(const GrClip& clip,
 
     GrShape shape(path, GrStyle::SimpleFill());
     GrPathRenderer::CanDrawPathArgs canDrawArgs;
-    canDrawArgs.fShaderCaps =
-        fRenderTargetContext->drawingManager()->getContext()->caps()->shaderCaps();
+    canDrawArgs.fCaps = fRenderTargetContext->drawingManager()->getContext()->caps();
     canDrawArgs.fViewMatrix = &viewMatrix;
     canDrawArgs.fShape = &shape;
     canDrawArgs.fAAType = aaType;
@@ -1478,7 +1476,7 @@ void GrRenderTargetContext::internalDrawPath(const GrClip& clip,
         aaType = GrAAType::kCoverage;
     }
     GrPathRenderer::CanDrawPathArgs canDrawArgs;
-    canDrawArgs.fShaderCaps = this->drawingManager()->getContext()->caps()->shaderCaps();
+    canDrawArgs.fCaps = this->drawingManager()->getContext()->caps();
     canDrawArgs.fViewMatrix = &viewMatrix;
     canDrawArgs.fShape = &shape;
     canDrawArgs.fHasUserStencilSettings = false;
@@ -1667,7 +1665,10 @@ uint32_t GrRenderTargetContext::addLegacyMeshDrawOp(GrPipelineBuilder&& pipeline
         }
     }
     op->initPipeline(args, analysis, overrideColor);
-    // TODO: We need to add pipeline dependencies on textures, etc before recording this op.
+
+    // Add the pipeline dependencies on textures, etc before recording this op.
+    op->addDependenciesTo(fRenderTargetProxy.get());
+
     op->setClippedBounds(bounds);
     return this->getOpList()->addOp(std::move(op), this);
 }

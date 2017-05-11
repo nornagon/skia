@@ -25,13 +25,13 @@
 
 void GrDrawingManager::cleanup() {
     for (int i = 0; i < fOpLists.count(); ++i) {
-        fOpLists[i]->makeClosed();  // no opList should receive a new command after this
+        // no opList should receive a new command after this
+        fOpLists[i]->makeClosed(*fContext->caps());
         fOpLists[i]->clearTarget();
 
         // We shouldn't need to do this, but it turns out some clients still hold onto opLists
         // after a cleanup
         fOpLists[i]->reset();
-        fOpLists[i]->unref();
     }
 
     fOpLists.reset();
@@ -70,6 +70,15 @@ void GrDrawingManager::reset() {
     fFlushState.reset();
 }
 
+gr_instanced::OpAllocator* GrDrawingManager::instancingAllocator() {
+    if (fInstancingAllocator) {
+        return fInstancingAllocator.get();
+    }
+
+    fInstancingAllocator = fContext->getGpu()->createInstancedRenderingAllocator();
+    return fInstancingAllocator.get();
+}
+
 // MDB TODO: make use of the 'proxy' parameter.
 void GrDrawingManager::internalFlush(GrSurfaceProxy*, GrResourceCache::FlushType type) {
     if (fFlushing || this->wasAbandoned()) {
@@ -83,16 +92,18 @@ void GrDrawingManager::internalFlush(GrSurfaceProxy*, GrResourceCache::FlushType
         // needs to flush mid-draw. In that case, the SkGpuDevice's GrOpLists won't be closed
         // but need to be flushed anyway. Closing such GrOpLists here will mean new
         // GrOpLists will be created to replace them if the SkGpuDevice(s) write to them again.
-        fOpLists[i]->makeClosed();
+        fOpLists[i]->makeClosed(*fContext->caps());
     }
 
+#ifdef ENABLE_MDB
     SkDEBUGCODE(bool result =)
                         SkTTopoSort<GrOpList, GrOpList::TopoSortTraits>(&fOpLists);
     SkASSERT(result);
+#endif
 
-    GrPreFlushResourceProvider preFlushProvider(this);
+    GrOnFlushResourceProvider onFlushProvider(this);
 
-    if (fPreFlushCBObjects.count()) {
+    if (!fOnFlushCBObjects.empty()) {
         // MDB TODO: pre-MDB '1' is the correct pre-allocated size. Post-MDB it will need
         // to be larger.
         SkAutoSTArray<1, uint32_t> opListIds(fOpLists.count());
@@ -101,10 +112,10 @@ void GrDrawingManager::internalFlush(GrSurfaceProxy*, GrResourceCache::FlushType
         }
 
         SkSTArray<1, sk_sp<GrRenderTargetContext>> renderTargetContexts;
-        for (int i = 0; i < fPreFlushCBObjects.count(); ++i) {
-            fPreFlushCBObjects[i]->preFlush(&preFlushProvider,
-                                            opListIds.get(), opListIds.count(),
-                                            &renderTargetContexts);
+        for (GrOnFlushCallbackObject* onFlushCBObject : fOnFlushCBObjects) {
+            onFlushCBObject->preFlush(&onFlushProvider,
+                                      opListIds.get(), opListIds.count(),
+                                      &renderTargetContexts);
             if (!renderTargetContexts.count()) {
                 continue;       // This is fine. No atlases of this type are required for this flush
             }
@@ -148,9 +159,6 @@ void GrDrawingManager::internalFlush(GrSurfaceProxy*, GrResourceCache::FlushType
 
     for (int i = 0; i < fOpLists.count(); ++i) {
         fOpLists[i]->reset();
-#ifdef ENABLE_MDB
-        fOpLists[i]->unref();
-#endif
     }
 
 #ifndef ENABLE_MDB
@@ -169,6 +177,9 @@ void GrDrawingManager::internalFlush(GrSurfaceProxy*, GrResourceCache::FlushType
     // We always have to notify the cache when it requested a flush so it can reset its state.
     if (flushed || type == GrResourceCache::FlushType::kCacheRequested) {
         fContext->getResourceCache()->notifyFlushOccurred(type);
+    }
+    for (GrOnFlushCallbackObject* onFlushCBObject : fOnFlushCBObjects) {
+        onFlushCBObject->postFlush();
     }
     fFlushing = false;
 }
@@ -193,11 +204,11 @@ void GrDrawingManager::prepareSurfaceForExternalIO(GrSurfaceProxy* proxy) {
     }
 }
 
-void GrDrawingManager::addPreFlushCallbackObject(sk_sp<GrPreFlushCallbackObject> preFlushCBObject) {
-    fPreFlushCBObjects.push_back(preFlushCBObject);
+void GrDrawingManager::addOnFlushCallbackObject(GrOnFlushCallbackObject* onFlushCBObject) {
+    fOnFlushCBObjects.push_back(onFlushCBObject);
 }
 
-GrRenderTargetOpList* GrDrawingManager::newOpList(GrRenderTargetProxy* rtp) {
+sk_sp<GrRenderTargetOpList> GrDrawingManager::newRTOpList(sk_sp<GrRenderTargetProxy> rtp) {
     SkASSERT(fContext);
 
 #ifndef ENABLE_MDB
@@ -206,31 +217,29 @@ GrRenderTargetOpList* GrDrawingManager::newOpList(GrRenderTargetProxy* rtp) {
         SkASSERT(fOpLists.count() == 1);
         // In the non-MDB-world the same GrOpList gets reused for multiple render targets.
         // Update this pointer so all the asserts are happy
-        rtp->setLastOpList(fOpLists[0]);
+        rtp->setLastOpList(fOpLists[0].get());
         // DrawingManager gets the creation ref - this ref is for the caller
 
         // TODO: although this is true right now it isn't cool
-        return SkRef((GrRenderTargetOpList*) fOpLists[0]);
+        return sk_ref_sp((GrRenderTargetOpList*) fOpLists[0].get());
     }
 #endif
 
-    GrRenderTargetOpList* opList = new GrRenderTargetOpList(rtp,
-                                                            fContext->getGpu(),
-                                                            fContext->resourceProvider(),
-                                                            fContext->getAuditTrail(),
-                                                            fOptionsForOpLists);
+    sk_sp<GrRenderTargetOpList> opList(new GrRenderTargetOpList(rtp,
+                                                                fContext->getGpu(),
+                                                                fContext->getAuditTrail()));
+    SkASSERT(rtp->getLastOpList() == opList.get());
 
-    *fOpLists.append() = opList;
+    fOpLists.push_back() = opList;
 
-    // DrawingManager gets the creation ref - this ref is for the caller
-    return SkRef(opList);
+    return opList;
 }
 
-GrTextureOpList* GrDrawingManager::newOpList(GrTextureProxy* textureProxy) {
+sk_sp<GrTextureOpList> GrDrawingManager::newTextureOpList(sk_sp<GrTextureProxy> textureProxy) {
     SkASSERT(fContext);
 
-    GrTextureOpList* opList = new GrTextureOpList(textureProxy, fContext->getGpu(),
-                                                  fContext->getAuditTrail());
+    sk_sp<GrTextureOpList> opList(new GrTextureOpList(std::move(textureProxy), fContext->getGpu(),
+                                                      fContext->getAuditTrail()));
 
 #ifndef ENABLE_MDB
     // When MDB is disabled we still create a new GrOpList, but don't store or ref it - we rely
@@ -240,7 +249,7 @@ GrTextureOpList* GrDrawingManager::newOpList(GrTextureProxy* textureProxy) {
     *fOpLists.append() = opList;
 
     // Drawing manager gets the creation ref - this ref is for the caller
-    return SkRef(opList);
+    return opList;
 #endif
 }
 

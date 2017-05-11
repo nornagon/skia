@@ -6,10 +6,9 @@
  */
 
 #include "GrOpList.h"
-
-#include "GrRenderTargetOpList.h"
-#include "GrSurface.h"
 #include "GrSurfaceProxy.h"
+
+#include "SkAtomics.h"
 
 uint32_t GrOpList::CreateUniqueID() {
     static int32_t gUniqueID = SK_InvalidUniqueID;
@@ -21,12 +20,13 @@ uint32_t GrOpList::CreateUniqueID() {
     return id;
 }
 
-GrOpList::GrOpList(GrSurfaceProxy* surfaceProxy, GrAuditTrail* auditTrail)
-    : fUniqueID(CreateUniqueID())
-    , fFlags(0)
-    , fTarget(surfaceProxy)
-    , fAuditTrail(auditTrail) {
-
+GrOpList::GrOpList(sk_sp<GrSurfaceProxy> surfaceProxy, GrAuditTrail* auditTrail)
+    // MDB TODO: in the future opLists will own the GrSurfaceProxy they target.
+    // For now, preserve the status quo.
+    : fTarget(surfaceProxy.get())
+    , fAuditTrail(auditTrail)
+    , fUniqueID(CreateUniqueID())
+    , fFlags(0) {
     surfaceProxy->setLastOpList(this);
 }
 
@@ -48,7 +48,7 @@ void GrOpList::addDependency(GrOpList* dependedOn) {
 }
 
 // Convert from a GrSurface-based dependency to a GrOpList one
-void GrOpList::addDependency(GrSurface* dependedOn) {
+void GrOpList::addDependency(GrSurfaceProxy* dependedOn, const GrCaps& caps) {
     if (dependedOn->getLastOpList()) {
         // If it is still receiving dependencies, this GrOpList shouldn't be closed
         SkASSERT(!this->isClosed());
@@ -60,7 +60,7 @@ void GrOpList::addDependency(GrSurface* dependedOn) {
             this->addDependency(opList);
 
             // Can't make it closed in the self-read case
-            opList->makeClosed();
+            opList->makeClosed(caps);
         }
     }
 }

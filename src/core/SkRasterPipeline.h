@@ -56,13 +56,13 @@
 // the Stage*.  This mostly matters on 64-bit Windows where every register is precious.
 
 #define SK_RASTER_PIPELINE_STAGES(M)                             \
+    M(callback)                                                  \
     M(move_src_dst) M(move_dst_src) M(swap)                      \
     M(clamp_0) M(clamp_1) M(clamp_a)                             \
     M(unpremul) M(premul)                                        \
     M(set_rgb) M(swap_rb)                                        \
     M(from_srgb) M(to_srgb)                                      \
-    M(from_2dot2) M(to_2dot2)                                    \
-    M(constant_color) M(seed_shader)                             \
+    M(constant_color) M(seed_shader) M(dither)                   \
     M(load_a8)   M(store_a8)                                     \
     M(load_g8)                                                   \
     M(load_565)  M(store_565)                                    \
@@ -80,13 +80,14 @@
     M(clear) M(modulate) M(multiply) M(plus_) M(screen) M(xor_)  \
     M(colorburn) M(colordodge) M(darken) M(difference)           \
     M(exclusion) M(hardlight) M(lighten) M(overlay) M(softlight) \
+    M(hue) M(saturation) M(color) M(luminosity)                  \
     M(luminance_to_alpha)                                        \
     M(matrix_2x3) M(matrix_3x4) M(matrix_4x5)                    \
     M(matrix_perspective)                                        \
     M(parametric_r) M(parametric_g) M(parametric_b)              \
     M(parametric_a)                                              \
     M(table_r) M(table_g) M(table_b) M(table_a)                  \
-    M(color_lookup_table) M(lab_to_xyz)                          \
+    M(lab_to_xyz)                                                \
     M(clamp_x) M(mirror_x) M(repeat_x)                           \
     M(clamp_y) M(mirror_y) M(repeat_y)                           \
     M(gather_a8) M(gather_g8) M(gather_i8)                       \
@@ -97,8 +98,9 @@
     M(save_xy) M(accumulate)                                     \
     M(linear_gradient)                                           \
     M(linear_gradient_2stops)                                    \
+    M(xy_to_polar_unit)                                          \
+    M(xy_to_radius)                                              \
     M(byte_tables) M(byte_tables_rgb)                            \
-    M(shader_adapter)                                            \
     M(rgb_to_hsl)                                                \
     M(hsl_to_rgb)
 
@@ -134,8 +136,6 @@ public:
     bool empty() const { return fStages.empty(); }
 
 private:
-    bool run_with_jumper(size_t x, size_t n) const;
-
     std::vector<Stage> fStages;
 };
 

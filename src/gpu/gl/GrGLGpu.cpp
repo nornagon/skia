@@ -8,6 +8,7 @@
 #include "GrGLGpu.h"
 
 #include "../private/GrGLSL.h"
+#include "GrBackendSurface.h"
 #include "GrFixedClip.h"
 #include "GrGLBuffer.h"
 #include "GrGLGpuCommandBuffer.h"
@@ -55,6 +56,9 @@
 
 using gr_instanced::InstancedRendering;
 using gr_instanced::GLInstancedRendering;
+
+using gr_instanced::OpAllocator;
+using gr_instanced::GLOpAllocator;
 
 static const GrGLenum gXfermodeEquation2Blend[] = {
     // Basic OpenGL blend equations.
@@ -187,6 +191,9 @@ GrGpu* GrGLGpu::Create(GrBackendContext backendContext, const GrContextOptions& 
     if (!glInterface) {
         return nullptr;
     }
+#ifdef USE_NSIGHT
+    const_cast<GrContextOptions&>(options).fSuppressPathRendering = true;
+#endif
     GrGLContext* glContext = GrGLContext::Create(glInterface.get(), options);
     if (glContext) {
         return new GrGLGpu(glContext, context);
@@ -365,17 +372,22 @@ void GrGLGpu::disconnect(DisconnectType type) {
 ///////////////////////////////////////////////////////////////////////////////
 
 void GrGLGpu::onResetContext(uint32_t resetBits) {
-    // we don't use the zb at all
     if (resetBits & kMisc_GrGLBackendState) {
+        // we don't use the zb at all
         GL_CALL(Disable(GR_GL_DEPTH_TEST));
         GL_CALL(DepthMask(GR_GL_FALSE));
+
+        // We don't use face culling.
+        GL_CALL(Disable(GR_GL_CULL_FACE));
+        // We do use separate stencil. Our algorithms don't care which face is front vs. back so
+        // just set this to the default for self-consistency.
+        GL_CALL(FrontFace(GR_GL_CCW));
 
         fHWBufferState[kTexel_GrBufferType].invalidate();
         fHWBufferState[kDrawIndirect_GrBufferType].invalidate();
         fHWBufferState[kXferCpuToGpu_GrBufferType].invalidate();
         fHWBufferState[kXferGpuToCpu_GrBufferType].invalidate();
 
-        fHWDrawFace = GrDrawFace::kInvalid;
         if (kGL_GrGLStandard == this->glStandard()) {
 #ifndef USE_NSIGHT
             // Desktop-only state that we never change
@@ -395,7 +407,11 @@ void GrGLGpu::onResetContext(uint32_t resetBits) {
             }
             GL_CALL(Disable(GR_GL_POLYGON_OFFSET_FILL));
 
-            GL_CALL(PolygonMode(GR_GL_FRONT_AND_BACK, GR_GL_FILL));
+            if (this->caps()->wireframeMode()) {
+                GL_CALL(PolygonMode(GR_GL_FRONT_AND_BACK, GR_GL_LINE));
+            } else {
+                GL_CALL(PolygonMode(GR_GL_FRONT_AND_BACK, GR_GL_FILL));
+            }
 #endif
             // Since ES doesn't support glPointSize at all we always use the VS to
             // set the point size
@@ -500,26 +516,18 @@ void GrGLGpu::onResetContext(uint32_t resetBits) {
     }
 }
 
-static GrSurfaceOrigin resolve_origin(GrSurfaceOrigin origin, bool renderTarget) {
-    // By default, GrRenderTargets are GL's normal orientation so that they
-    // can be drawn to by the outside world without the client having
-    // to render upside down.
-    if (kDefault_GrSurfaceOrigin == origin) {
-        return renderTarget ? kBottomLeft_GrSurfaceOrigin : kTopLeft_GrSurfaceOrigin;
-    } else {
-        return origin;
-    }
-}
-
-sk_sp<GrTexture> GrGLGpu::onWrapBackendTexture(const GrBackendTextureDesc& desc,
+sk_sp<GrTexture> GrGLGpu::onWrapBackendTexture(const GrBackendTexture& backendTex,
+                                               GrSurfaceOrigin origin,
+                                               GrBackendTextureFlags flags,
+                                               int sampleCnt,
                                                GrWrapOwnership ownership) {
-    const GrGLTextureInfo* info = reinterpret_cast<const GrGLTextureInfo*>(desc.fTextureHandle);
+    const GrGLTextureInfo* info = backendTex.getGLTextureInfo();
     if (!info || !info->fID) {
         return nullptr;
     }
 
-    // next line relies on GrBackendTextureDesc's flags matching GrTexture's
-    bool renderTarget = SkToBool(desc.fFlags & kRenderTarget_GrBackendTextureFlag);
+    // next line relies on GrBackendTextureFlags matching GrTexture's
+    bool renderTarget = SkToBool(flags & kRenderTarget_GrBackendTextureFlag);
     SkASSERT(!renderTarget || kAdoptAndCache_GrWrapOwnership != ownership);  // Not supported
 
     GrGLTexture::IDDesc idDesc;
@@ -543,7 +551,7 @@ sk_sp<GrTexture> GrGLGpu::onWrapBackendTexture(const GrBackendTextureDesc& desc,
 
     // Sample count is interpreted to mean the number of samples that Gr code should allocate
     // for a render buffer that resolves to the texture. We don't support MSAA textures.
-    if (desc.fSampleCnt && !renderTarget) {
+    if (sampleCnt && !renderTarget) {
         return nullptr;
     }
 
@@ -554,19 +562,19 @@ sk_sp<GrTexture> GrGLGpu::onWrapBackendTexture(const GrBackendTextureDesc& desc,
     }
 
     GrSurfaceDesc surfDesc;
-    surfDesc.fFlags = (GrSurfaceFlags) desc.fFlags;
-    surfDesc.fWidth = desc.fWidth;
-    surfDesc.fHeight = desc.fHeight;
-    surfDesc.fConfig = desc.fConfig;
-    surfDesc.fSampleCnt = SkTMin(desc.fSampleCnt, this->caps()->maxSampleCount());
+    surfDesc.fFlags = (GrSurfaceFlags) flags;
+    surfDesc.fWidth = backendTex.width();
+    surfDesc.fHeight = backendTex.height();
+    surfDesc.fConfig = backendTex.config();
+    surfDesc.fSampleCnt = SkTMin(sampleCnt, this->caps()->maxSampleCount());
     // FIXME:  this should be calling resolve_origin(), but Chrome code is currently
     // assuming the old behaviour, which is that backend textures are always
     // BottomLeft, even for non-RT's.  Once Chrome is fixed, change this to:
     // glTexDesc.fOrigin = resolve_origin(desc.fOrigin, renderTarget);
-    if (kDefault_GrSurfaceOrigin == desc.fOrigin) {
+    if (kDefault_GrSurfaceOrigin == origin) {
         surfDesc.fOrigin = kBottomLeft_GrSurfaceOrigin;
     } else {
-        surfDesc.fOrigin = desc.fOrigin;
+        surfDesc.fOrigin = origin;
     }
 
     if (renderTarget) {
@@ -584,27 +592,36 @@ sk_sp<GrTexture> GrGLGpu::onWrapBackendTexture(const GrBackendTextureDesc& desc,
     }
 }
 
-sk_sp<GrRenderTarget> GrGLGpu::onWrapBackendRenderTarget(const GrBackendRenderTargetDesc& wrapDesc){
+sk_sp<GrRenderTarget> GrGLGpu::onWrapBackendRenderTarget(const GrBackendRenderTarget& backendRT,
+                                                         GrSurfaceOrigin origin) {
+    const GrGLFramebufferInfo* info = backendRT.getGLFramebufferInfo();
+    if (!info) {
+        return nullptr;
+    }
+
     GrGLRenderTarget::IDDesc idDesc;
-    idDesc.fRTFBOID = static_cast<GrGLuint>(wrapDesc.fRenderTargetHandle);
+    idDesc.fRTFBOID = info->fFBOID;
     idDesc.fMSColorRenderbufferID = 0;
     idDesc.fTexFBOID = GrGLRenderTarget::kUnresolvableFBOID;
     idDesc.fRTFBOOwnership = GrBackendObjectOwnership::kBorrowed;
     idDesc.fIsMixedSampled = false;
 
     GrSurfaceDesc desc;
-    desc.fConfig = wrapDesc.fConfig;
+    desc.fConfig = backendRT.config();
     desc.fFlags = kCheckAllocation_GrSurfaceFlag | kRenderTarget_GrSurfaceFlag;
-    desc.fWidth = wrapDesc.fWidth;
-    desc.fHeight = wrapDesc.fHeight;
-    desc.fSampleCnt = SkTMin(wrapDesc.fSampleCnt, this->caps()->maxSampleCount());
-    desc.fOrigin = resolve_origin(wrapDesc.fOrigin, true);
+    desc.fWidth = backendRT.width();
+    desc.fHeight = backendRT.height();
+    desc.fSampleCnt = SkTMin(backendRT.sampleCnt(), this->caps()->maxSampleCount());
+    SkASSERT(kDefault_GrSurfaceOrigin != origin);
+    desc.fOrigin = origin;
 
-    return GrGLRenderTarget::MakeWrapped(this, desc, idDesc, wrapDesc.fStencilBits);
+    return GrGLRenderTarget::MakeWrapped(this, desc, idDesc, backendRT.stencilBits());
 }
 
-sk_sp<GrRenderTarget> GrGLGpu::onWrapBackendTextureAsRenderTarget(const GrBackendTextureDesc& desc){
-    const GrGLTextureInfo* info = reinterpret_cast<const GrGLTextureInfo*>(desc.fTextureHandle);
+sk_sp<GrRenderTarget> GrGLGpu::onWrapBackendTextureAsRenderTarget(const GrBackendTexture& tex,
+                                                                  GrSurfaceOrigin origin,
+                                                                  int sampleCnt) {
+    const GrGLTextureInfo* info = tex.getGLTextureInfo();
     if (!info || !info->fID) {
         return nullptr;
     }
@@ -621,19 +638,19 @@ sk_sp<GrRenderTarget> GrGLGpu::onWrapBackendTextureAsRenderTarget(const GrBacken
     }
 
     GrSurfaceDesc surfDesc;
-    surfDesc.fFlags = (GrSurfaceFlags) desc.fFlags;
-    surfDesc.fWidth = desc.fWidth;
-    surfDesc.fHeight = desc.fHeight;
-    surfDesc.fConfig = desc.fConfig;
-    surfDesc.fSampleCnt = SkTMin(desc.fSampleCnt, this->caps()->maxSampleCount());
+    surfDesc.fFlags = kRenderTarget_GrSurfaceFlag;
+    surfDesc.fWidth = tex.width();
+    surfDesc.fHeight = tex.height();
+    surfDesc.fConfig = tex.config();
+    surfDesc.fSampleCnt = SkTMin(sampleCnt, this->caps()->maxSampleCount());
     // FIXME:  this should be calling resolve_origin(), but Chrome code is currently
     // assuming the old behaviour, which is that backend textures are always
     // BottomLeft, even for non-RT's.  Once Chrome is fixed, change this to:
     // glTexDesc.fOrigin = resolve_origin(desc.fOrigin, renderTarget);
-    if (kDefault_GrSurfaceOrigin == desc.fOrigin) {
+    if (kDefault_GrSurfaceOrigin == origin) {
         surfDesc.fOrigin = kBottomLeft_GrSurfaceOrigin;
     } else {
-        surfDesc.fOrigin = desc.fOrigin;
+        surfDesc.fOrigin = origin;
     }
 
     GrGLRenderTarget::IDDesc rtIDDesc;
@@ -663,6 +680,11 @@ bool GrGLGpu::onGetWritePixelsInfo(GrSurface* dstSurface, int width, int height,
              // We don't currently support writing pixels to EXTERNAL textures.
              return false;
         }
+    }
+
+    // If the dst is MSAA, we have to draw, or we'll just be writing to the resolve target.
+    if (dstSurface->asRenderTarget() && dstSurface->asRenderTarget()->numColorSamples() > 0) {
+        ElevateDrawPreference(drawPreference, kRequireDraw_DrawPreference);
     }
 
     if (GrPixelConfigIsSRGB(dstSurface->config()) != GrPixelConfigIsSRGB(srcConfig)) {
@@ -1825,6 +1847,11 @@ GrBuffer* GrGLGpu::onCreateBuffer(size_t size, GrBufferType intendedType,
     return GrGLBuffer::Create(this, size, intendedType, accessPattern, data);
 }
 
+
+std::unique_ptr<OpAllocator> GrGLGpu::onCreateInstancedRenderingAllocator() {
+    return std::unique_ptr<OpAllocator>(new GLOpAllocator(this->caps()));
+}
+
 InstancedRendering* GrGLGpu::onCreateInstancedRendering() {
     return new GLInstancedRendering(this);
 }
@@ -1926,7 +1953,6 @@ bool GrGLGpu::flushGLState(const GrPipeline& pipeline, const GrPrimitiveProcesso
     pipeline.getXferProcessor().getBlendInfo(&blendInfo);
 
     this->flushColorWrite(blendInfo.fWriteColor);
-    this->flushDrawFace(pipeline.getDrawFace());
     this->flushMinSampleShading(primProc.getSampleShading());
 
     GrGLuint programID = program->programID();
@@ -1965,51 +1991,35 @@ bool GrGLGpu::flushGLState(const GrPipeline& pipeline, const GrPrimitiveProcesso
 }
 
 void GrGLGpu::setupGeometry(const GrPrimitiveProcessor& primProc,
-                            const GrNonInstancedMesh& mesh,
-                            size_t* indexOffsetInBytes) {
-    const GrBuffer* vbuf = mesh.vertexBuffer();
-    SkASSERT(vbuf);
-    SkASSERT(!vbuf->isMapped());
-
+                            const GrBuffer* indexBuffer,
+                            const GrBuffer* vertexBuffer,
+                            int baseVertex) {
     GrGLAttribArrayState* attribState;
-    if (mesh.isIndexed()) {
-        SkASSERT(indexOffsetInBytes);
-
-        *indexOffsetInBytes = 0;
-        const GrBuffer* ibuf = mesh.indexBuffer();
-        SkASSERT(ibuf);
-        SkASSERT(!ibuf->isMapped());
-        *indexOffsetInBytes += ibuf->baseOffset();
-        attribState = fHWVertexArrayState.bindInternalVertexArray(this, ibuf);
+    if (indexBuffer) {
+        SkASSERT(indexBuffer);
+        SkASSERT(!indexBuffer->isMapped());
+        attribState = fHWVertexArrayState.bindInternalVertexArray(this, indexBuffer);
     } else {
         attribState = fHWVertexArrayState.bindInternalVertexArray(this);
     }
 
     int vaCount = primProc.numAttribs();
+    attribState->enableVertexArrays(this, vaCount);
+
     if (vaCount > 0) {
+        SkASSERT(vertexBuffer);
+        SkASSERT(!vertexBuffer->isMapped());
 
         GrGLsizei stride = static_cast<GrGLsizei>(primProc.getVertexStride());
-
-        size_t vertexOffsetInBytes = stride * mesh.startVertex();
-
-        vertexOffsetInBytes += vbuf->baseOffset();
-
-        uint32_t usedAttribArraysMask = 0;
-        size_t offset = 0;
+        size_t vertexBufferOffsetInBytes = stride * baseVertex + vertexBuffer->baseOffset();
+        size_t attribOffset = 0;
 
         for (int attribIndex = 0; attribIndex < vaCount; attribIndex++) {
             const GrGeometryProcessor::Attribute& attrib = primProc.getAttrib(attribIndex);
-            usedAttribArraysMask |= (1 << attribIndex);
-            GrVertexAttribType attribType = attrib.fType;
-            attribState->set(this,
-                             attribIndex,
-                             vbuf,
-                             attribType,
-                             stride,
-                             reinterpret_cast<GrGLvoid*>(vertexOffsetInBytes + offset));
-            offset += attrib.fOffset;
+            attribState->set(this, attribIndex, vertexBuffer, attrib.fType, stride,
+                             vertexBufferOffsetInBytes + attribOffset);
+            attribOffset += attrib.fOffset;
         }
-        attribState->disableUnusedArrays(this, usedAttribArraysMask);
     }
 }
 
@@ -2277,7 +2287,7 @@ bool GrGLGpu::onGetReadPixelsInfo(GrSurface* srcSurface, int width, int height, 
 
     // Depends on why we need/want a temp draw. Start off assuming no change, the surface we read
     // from will be srcConfig and we will read readConfig pixels from it.
-    // Not that if we require a draw and return a non-renderable format for the temp surface the
+    // Note that if we require a draw and return a non-renderable format for the temp surface the
     // base class will fail for us.
     tempDrawInfo->fTempSurfaceDesc.fConfig = srcConfig;
     tempDrawInfo->fReadConfig = readConfig;
@@ -2627,7 +2637,7 @@ void GrGLGpu::draw(const GrPipeline& pipeline,
 
     bool hasPoints = false;
     for (int i = 0; i < meshCount; ++i) {
-        if (meshes[i].primitiveType() == kPoints_GrPrimitiveType) {
+        if (meshes[i].fPrimitiveType == kPoints_GrPrimitiveType) {
             hasPoints = true;
             break;
         }
@@ -2642,41 +2652,38 @@ void GrGLGpu::draw(const GrPipeline& pipeline,
         }
 
         const GrMesh& mesh = meshes[i];
-        GrMesh::Iterator iter;
-        const GrNonInstancedMesh* nonInstMesh = iter.init(mesh);
-        do {
-            size_t indexOffsetInBytes = 0;
-            this->setupGeometry(primProc, *nonInstMesh, &indexOffsetInBytes);
-            if (nonInstMesh->isIndexed()) {
-                GrGLvoid* indices =
-                    reinterpret_cast<GrGLvoid*>(indexOffsetInBytes +
-                                                sizeof(uint16_t) * nonInstMesh->startIndex());
-                // info.startVertex() was accounted for by setupGeometry.
+        for (GrMesh::PatternBatch batch : mesh) {
+            this->setupGeometry(primProc, mesh.fIndexBuffer.get(), mesh.fVertexBuffer.get(),
+                                batch.fBaseVertex);
+            if (const GrBuffer* indexBuffer = mesh.fIndexBuffer.get()) {
+                GrGLvoid* indices = reinterpret_cast<void*>(indexBuffer->baseOffset() +
+                                                            sizeof(uint16_t) * mesh.fBaseIndex);
+                // mesh.fBaseVertex was accounted for by setupGeometry.
                 if (this->glCaps().drawRangeElementsSupport()) {
                     // We assume here that the GrMeshDrawOps that generated the mesh used the full
                     // 0..vertexCount()-1 range.
                     int start = 0;
-                    int end = nonInstMesh->vertexCount() - 1;
-                    GL_CALL(DrawRangeElements(gPrimitiveType2GLMode[nonInstMesh->primitiveType()],
+                    int end = mesh.fVertexCount * batch.fRepeatCount - 1;
+                    GL_CALL(DrawRangeElements(gPrimitiveType2GLMode[mesh.fPrimitiveType],
                                               start, end,
-                                              nonInstMesh->indexCount(),
+                                              mesh.fIndexCount * batch.fRepeatCount,
                                               GR_GL_UNSIGNED_SHORT,
                                               indices));
                 } else {
-                    GL_CALL(DrawElements(gPrimitiveType2GLMode[nonInstMesh->primitiveType()],
-                                         nonInstMesh->indexCount(),
+                    GL_CALL(DrawElements(gPrimitiveType2GLMode[mesh.fPrimitiveType],
+                                         mesh.fIndexCount * batch.fRepeatCount,
                                          GR_GL_UNSIGNED_SHORT,
                                          indices));
                 }
             } else {
                 // Pass 0 for parameter first. We have to adjust glVertexAttribPointer() to account
-                // for startVertex in the DrawElements case. So we always rely on setupGeometry to
-                // have accounted for startVertex.
-                GL_CALL(DrawArrays(gPrimitiveType2GLMode[nonInstMesh->primitiveType()], 0,
-                                   nonInstMesh->vertexCount()));
+                // for mesh.fBaseVertex in the DrawElements case. So we always rely on setupGeometry
+                // to have accounted for mesh.fBaseVertex.
+                GL_CALL(DrawArrays(gPrimitiveType2GLMode[mesh.fPrimitiveType], 0,
+                                   mesh.fVertexCount * batch.fRepeatCount));
             }
             fStats.incNumDraws();
-        } while ((nonInstMesh = iter.next()));
+        }
     }
 
 #if SWAP_PER_DRAW
@@ -2805,7 +2812,6 @@ void GrGLGpu::flushStencil(const GrStencilSettings& stencilSettings) {
             fHWStencilTestEnabled = kYes_TriState;
         }
         if (stencilSettings.isTwoSided()) {
-            SkASSERT(this->caps()->twoSidedStencilSupport());
             set_gl_stencil(this->glInterface(),
                            stencilSettings.front(),
                            GR_GL_FRONT);
@@ -3265,27 +3271,6 @@ void GrGLGpu::flushColorWrite(bool writeColor) {
             GL_CALL(ColorMask(GR_GL_TRUE, GR_GL_TRUE, GR_GL_TRUE, GR_GL_TRUE));
             fHWWriteToColor = kYes_TriState;
         }
-    }
-}
-
-void GrGLGpu::flushDrawFace(GrDrawFace face) {
-    if (fHWDrawFace != face) {
-        switch (face) {
-            case GrDrawFace::kCCW:
-                GL_CALL(Enable(GR_GL_CULL_FACE));
-                GL_CALL(CullFace(GR_GL_BACK));
-                break;
-            case GrDrawFace::kCW:
-                GL_CALL(Enable(GR_GL_CULL_FACE));
-                GL_CALL(CullFace(GR_GL_FRONT));
-                break;
-            case GrDrawFace::kBoth:
-                GL_CALL(Disable(GR_GL_CULL_FACE));
-                break;
-            default:
-                SkFAIL("Unknown draw face.");
-        }
-        fHWDrawFace = face;
     }
 }
 
@@ -3926,9 +3911,9 @@ void GrGLGpu::drawDebugWireRect(GrRenderTarget* rt, const SkIRect& rect, GrColor
     fHWVertexArrayState.setVertexArrayID(this, 0);
 
     GrGLAttribArrayState* attribs = fHWVertexArrayState.bindInternalVertexArray(this);
+    attribs->enableVertexArrays(this, 1);
     attribs->set(this, 0, fWireRectArrayBuffer.get(), kVec2f_GrVertexAttribType,
                  2 * sizeof(GrGLfloat), 0);
-    attribs->disableUnusedArrays(this, 0x1);
 
     GL_CALL(Uniform4fv(fWireRectProgram.fRectUniform, 1, edges));
     GL_CALL(Uniform4fv(fWireRectProgram.fColorUniform, 1, channels));
@@ -3937,7 +3922,6 @@ void GrGLGpu::drawDebugWireRect(GrRenderTarget* rt, const SkIRect& rect, GrColor
     blendInfo.reset();
     this->flushBlend(blendInfo, GrSwizzle::RGBA());
     this->flushColorWrite(true);
-    this->flushDrawFace(GrDrawFace::kBoth);
     this->flushHWAAState(glRT, false, false);
     this->disableScissor();
     this->disableWindowRectangles();
@@ -3980,9 +3964,9 @@ bool GrGLGpu::copySurfaceAsDraw(GrSurface* dst,
     fHWVertexArrayState.setVertexArrayID(this, 0);
 
     GrGLAttribArrayState* attribs = fHWVertexArrayState.bindInternalVertexArray(this);
+    attribs->enableVertexArrays(this, 1);
     attribs->set(this, 0, fCopyProgramArrayBuffer.get(), kVec2f_GrVertexAttribType,
                  2 * sizeof(GrGLfloat), 0);
-    attribs->disableUnusedArrays(this, 0x1);
 
     // dst rect edges in NDC (-1 to 1)
     int dw = dst->width();
@@ -4000,20 +3984,17 @@ bool GrGLGpu::copySurfaceAsDraw(GrSurface* dst,
     GrGLfloat sx1 = (GrGLfloat)(srcRect.fLeft + w);
     GrGLfloat sy0 = (GrGLfloat)srcRect.fTop;
     GrGLfloat sy1 = (GrGLfloat)(srcRect.fTop + h);
+    int sw = src->width();
     int sh = src->height();
     if (kBottomLeft_GrSurfaceOrigin == src->origin()) {
         sy0 = sh - sy0;
         sy1 = sh - sy1;
     }
-    // src rect edges in normalized texture space (0 to 1) unless we're using a RECTANGLE texture.
-    GrGLenum srcTarget = srcTex->target();
-    if (GR_GL_TEXTURE_RECTANGLE != srcTarget) {
-        int sw = src->width();
-        sx0 /= sw;
-        sx1 /= sw;
-        sy0 /= sh;
-        sy1 /= sh;
-    }
+    // src rect edges in normalized texture space (0 to 1)
+    sx0 /= sw;
+    sx1 /= sw;
+    sy0 /= sh;
+    sy1 /= sh;
 
     GL_CALL(Uniform4f(fCopyPrograms[progIdx].fPosXformUniform, dx1 - dx0, dy1 - dy0, dx0, dy0));
     GL_CALL(Uniform4f(fCopyPrograms[progIdx].fTexCoordXformUniform,
@@ -4024,7 +4005,6 @@ bool GrGLGpu::copySurfaceAsDraw(GrSurface* dst,
     blendInfo.reset();
     this->flushBlend(blendInfo, GrSwizzle::RGBA());
     this->flushColorWrite(true);
-    this->flushDrawFace(GrDrawFace::kBoth);
     this->flushHWAAState(nullptr, false, false);
     this->disableScissor();
     this->disableWindowRectangles();
@@ -4224,16 +4204,15 @@ bool GrGLGpu::generateMipmap(GrGLTexture* texture, bool gammaCorrect) {
     fHWVertexArrayState.setVertexArrayID(this, 0);
 
     GrGLAttribArrayState* attribs = fHWVertexArrayState.bindInternalVertexArray(this);
+    attribs->enableVertexArrays(this, 1);
     attribs->set(this, 0, fMipmapProgramArrayBuffer.get(), kVec2f_GrVertexAttribType,
                  2 * sizeof(GrGLfloat), 0);
-    attribs->disableUnusedArrays(this, 0x1);
 
     // Set "simple" state once:
     GrXferProcessor::BlendInfo blendInfo;
     blendInfo.reset();
     this->flushBlend(blendInfo, GrSwizzle::RGBA());
     this->flushColorWrite(true);
-    this->flushDrawFace(GrDrawFace::kBoth);
     this->flushHWAAState(nullptr, false, false);
     this->disableScissor();
     this->disableWindowRectangles();
@@ -4476,12 +4455,16 @@ sk_sp<GrSemaphore> SK_WARN_UNUSED_RESULT GrGLGpu::makeSemaphore() {
     return GrGLSemaphore::Make(this);
 }
 
-void GrGLGpu::insertSemaphore(sk_sp<GrSemaphore> semaphore) {
+void GrGLGpu::insertSemaphore(sk_sp<GrSemaphore> semaphore, bool flush) {
     GrGLSemaphore* glSem = static_cast<GrGLSemaphore*>(semaphore.get());
 
     GrGLsync sync;
     GL_CALL_RET(sync, FenceSync(GR_GL_SYNC_GPU_COMMANDS_COMPLETE, 0));
     glSem->setSync(sync);
+
+    if (flush) {
+        GL_CALL(Flush());
+    }
 }
 
 void GrGLGpu::waitSemaphore(sk_sp<GrSemaphore> semaphore) {
@@ -4494,6 +4477,10 @@ void GrGLGpu::deleteSync(GrGLsync sync) const {
     GL_CALL(DeleteSync(sync));
 }
 
-void GrGLGpu::flush() {
-    GL_CALL(Flush());
+sk_sp<GrSemaphore> GrGLGpu::prepareTextureForCrossContextUsage(GrTexture* texture) {
+    // Set up a semaphore to be signaled once the data is ready, and flush GL
+    sk_sp<GrSemaphore> semaphore = this->makeSemaphore();
+    this->insertSemaphore(semaphore, true);
+
+    return semaphore;
 }

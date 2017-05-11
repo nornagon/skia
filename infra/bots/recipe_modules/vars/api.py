@@ -43,7 +43,6 @@ class SkiaVarsApi(recipe_api.RecipeApi):
                                 '-CT_' in self.builder_name or
                                 'Presubmit' in self.builder_name or
                                 'InfraTests' in self.builder_name or
-                                'BundleRecipes' in self.builder_name or
                                 self.builder_name == "Housekeeper-PerCommit")
     if self.persistent_checkout:
       if 'Win' in self.builder_name:
@@ -94,7 +93,7 @@ class SkiaVarsApi(recipe_api.RecipeApi):
     if 'CommandBuffer' in self.builder_name:
       self.need_chromium_checkout = True
       self.gclient_env['GYP_CHROMIUM_NO_ACTION'] = '0'
-    if 'RecreateSKPs' in self.builder_name:  # pragma: no cover
+    if 'RecreateSKPs' in self.builder_name:
       self.need_chromium_checkout = True
       self.gclient_env['CPPFLAGS'] = (
           '-DSK_ALLOW_CROSSPROCESS_PICTUREIMAGEFILTERS=1')

@@ -12,6 +12,7 @@
 #include "GrOp.h"
 #include "GrOpFlushState.h"
 #include "GrRenderTarget.h"
+#include "GrRenderTargetContext.h"
 
 class GrDiscardOp final : public GrOp {
 public:
@@ -35,9 +36,9 @@ public:
 
     SkString dumpInfo() const override {
         SkString string;
-        string.printf("rtID: %d proxyID: %d ", fRenderTarget.get()->uniqueID().asUInt(),
-                                               fProxyUniqueID.asUInt());
         string.append(INHERITED::dumpInfo());
+        string.printf("rtID: %d proxyID: %d\n", fRenderTarget.get()->uniqueID().asUInt(),
+                                                fProxyUniqueID.asUInt());
         return string;
     }
 

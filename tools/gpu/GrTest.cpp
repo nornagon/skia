@@ -7,7 +7,9 @@
 
 #include "GrTest.h"
 
+#include "GrBackendSurface.h"
 #include "GrContextOptions.h"
+#include "GrContextPriv.h"
 #include "GrDrawOpAtlas.h"
 #include "GrDrawingManager.h"
 #include "GrGpuResourceCacheAccess.h"
@@ -24,6 +26,8 @@
 
 #include "text/GrAtlasGlyphCache.h"
 #include "text/GrTextBlobCache.h"
+
+#include <algorithm>
 
 namespace GrTest {
 void SetupAlwaysEvictAtlas(GrContext* context) {
@@ -53,6 +57,18 @@ void SetupAlwaysEvictAtlas(GrContext* context) {
     configs[kARGB_GrMaskFormat].fPlotHeight = dim;
 
     context->setTextContextAtlasSizes_ForTesting(configs);
+}
+
+GrBackendTexture CreateBackendTexture(GrBackend backend, int width, int height,
+                                      GrPixelConfig config, GrBackendObject handle) {
+    if (kOpenGL_GrBackend == backend) {
+        GrGLTextureInfo* glInfo = (GrGLTextureInfo*)(handle);
+        return GrBackendTexture(width, height, config, *glInfo);
+    } else {
+        SkASSERT(kVulkan_GrBackend == backend);
+        GrVkImageInfo* vkInfo = (GrVkImageInfo*)(handle);
+        return GrBackendTexture(width, height, *vkInfo);
+    }
 }
 };
 
@@ -238,8 +254,9 @@ uint32_t GrRenderTargetContextPriv::testingOnly_addLegacyMeshDrawOp(
     if (fRenderTargetContext->drawingManager()->wasAbandoned()) {
         return SK_InvalidUniqueID;
     }
-    SkDEBUGCODE(fRenderTargetContext->validate();) GR_AUDIT_TRAIL_AUTO_FRAME(
-            fRenderTargetContext->fAuditTrail, "GrRenderTargetContext::testingOnly_addMeshDrawOp");
+    SkDEBUGCODE(fRenderTargetContext->validate());
+    GR_AUDIT_TRAIL_AUTO_FRAME(fRenderTargetContext->fAuditTrail,
+                              "GrRenderTargetContext::testingOnly_addLegacyMeshDrawOp");
 
     GrPipelineBuilder pipelineBuilder(std::move(paint), aaType);
     if (uss) {
@@ -249,6 +266,17 @@ uint32_t GrRenderTargetContextPriv::testingOnly_addLegacyMeshDrawOp(
 
     return fRenderTargetContext->addLegacyMeshDrawOp(std::move(pipelineBuilder), GrNoClip(),
                                                      std::move(op));
+}
+
+uint32_t GrRenderTargetContextPriv::testingOnly_addDrawOp(std::unique_ptr<GrDrawOp> op) {
+    ASSERT_SINGLE_OWNER
+    if (fRenderTargetContext->drawingManager()->wasAbandoned()) {
+        return SK_InvalidUniqueID;
+    }
+    SkDEBUGCODE(fRenderTargetContext->validate());
+    GR_AUDIT_TRAIL_AUTO_FRAME(fRenderTargetContext->fAuditTrail,
+                              "GrRenderTargetContext::testingOnly_addDrawOp");
+    return fRenderTargetContext->addDrawOp(GrNoClip(), std::move(op));
 }
 
 #undef ASSERT_SINGLE_OWNER
@@ -317,11 +345,11 @@ public:
     GrFence SK_WARN_UNUSED_RESULT insertFence() override { return 0; }
     bool waitFence(GrFence, uint64_t) override { return true; }
     void deleteFence(GrFence) const override {}
-    void flush() override {}
 
     sk_sp<GrSemaphore> SK_WARN_UNUSED_RESULT makeSemaphore() override { return nullptr; }
-    void insertSemaphore(sk_sp<GrSemaphore> semaphore) override {}
+    void insertSemaphore(sk_sp<GrSemaphore> semaphore, bool flush) override {}
     void waitSemaphore(sk_sp<GrSemaphore> semaphore) override {}
+    sk_sp<GrSemaphore> prepareTextureForCrossContextUsage(GrTexture*) override { return nullptr; }
 
 private:
     void onResetContext(uint32_t resetBits) override {}
@@ -338,15 +366,22 @@ private:
         return nullptr;
     }
 
-    sk_sp<GrTexture> onWrapBackendTexture(const GrBackendTextureDesc&, GrWrapOwnership) override {
+    sk_sp<GrTexture> onWrapBackendTexture(const GrBackendTexture&,
+                                          GrSurfaceOrigin,
+                                          GrBackendTextureFlags,
+                                          int sampleCnt,
+                                          GrWrapOwnership) override {
         return nullptr;
     }
 
-    sk_sp<GrRenderTarget> onWrapBackendRenderTarget(const GrBackendRenderTargetDesc&) override {
+    sk_sp<GrRenderTarget> onWrapBackendRenderTarget(const GrBackendRenderTarget&,
+                                                    GrSurfaceOrigin) override {
         return nullptr;
     }
 
-    sk_sp<GrRenderTarget> onWrapBackendTextureAsRenderTarget(const GrBackendTextureDesc&) override {
+    sk_sp<GrRenderTarget> onWrapBackendTextureAsRenderTarget(const GrBackendTexture&,
+                                                             GrSurfaceOrigin,
+                                                             int sampleCnt) override {
         return nullptr;
     }
 
@@ -416,4 +451,16 @@ void GrContext::initMockContext() {
     // these objects are required for any of tests that use this context. TODO: make stop allocating
     // resources in the buffer pools.
     fDrawingManager->abandon();
+}
+
+void GrContextPriv::testingOnly_flushAndRemoveOnFlushCallbackObject(GrOnFlushCallbackObject* cb) {
+    fContext->flush();
+    fContext->fDrawingManager->testingOnly_removeOnFlushCallbackObject(cb);
+}
+
+void GrDrawingManager::testingOnly_removeOnFlushCallbackObject(GrOnFlushCallbackObject* cb) {
+    int n = std::find(fOnFlushCBObjects.begin(), fOnFlushCBObjects.end(), cb) -
+            fOnFlushCBObjects.begin();
+    SkASSERT(n < fOnFlushCBObjects.count());
+    fOnFlushCBObjects.removeShuffle(n);
 }

@@ -26,7 +26,6 @@
 
 class GrGLBuffer;
 class GrPipeline;
-class GrNonInstancedMesh;
 class GrSwizzle;
 
 namespace gr_instanced { class GLInstancedRendering; }
@@ -147,12 +146,12 @@ public:
     void deleteFence(GrFence) const override;
 
     sk_sp<GrSemaphore> SK_WARN_UNUSED_RESULT makeSemaphore() override;
-    void insertSemaphore(sk_sp<GrSemaphore> semaphore) override;
+    void insertSemaphore(sk_sp<GrSemaphore> semaphore, bool flush) override;
     void waitSemaphore(sk_sp<GrSemaphore> semaphore) override;
 
-    void deleteSync(GrGLsync) const;
+    sk_sp<GrSemaphore> prepareTextureForCrossContextUsage(GrTexture*) override;
 
-    void flush() override;
+    void deleteSync(GrGLsync) const;
 
 private:
     GrGLGpu(GrGLContext* ctx, GrContext* context);
@@ -170,10 +169,19 @@ private:
 
     GrBuffer* onCreateBuffer(size_t size, GrBufferType intendedType, GrAccessPattern,
                              const void* data) override;
-    sk_sp<GrTexture> onWrapBackendTexture(const GrBackendTextureDesc&, GrWrapOwnership) override;
-    sk_sp<GrRenderTarget> onWrapBackendRenderTarget(const GrBackendRenderTargetDesc&) override;
-    sk_sp<GrRenderTarget> onWrapBackendTextureAsRenderTarget(const GrBackendTextureDesc&) override;
 
+    sk_sp<GrTexture> onWrapBackendTexture(const GrBackendTexture&,
+                                          GrSurfaceOrigin,
+                                          GrBackendTextureFlags,
+                                          int sampleCnt,
+                                          GrWrapOwnership) override;
+    sk_sp<GrRenderTarget> onWrapBackendRenderTarget(const GrBackendRenderTarget&,
+                                                    GrSurfaceOrigin origin) override;
+    sk_sp<GrRenderTarget> onWrapBackendTextureAsRenderTarget(const GrBackendTexture&,
+                                                             GrSurfaceOrigin,
+                                                             int sampleCnt) override;
+
+    std::unique_ptr<gr_instanced::OpAllocator> onCreateInstancedRenderingAllocator() override;
     gr_instanced::InstancedRendering* onCreateInstancedRendering() override;
 
     // Given a GrPixelConfig return the index into the stencil format array on GrGLCaps to a
@@ -247,8 +255,9 @@ private:
     // an into the index buffer. It does not account for vertices.startIndex() but rather the start
     // index is relative to the returned offset.
     void setupGeometry(const GrPrimitiveProcessor&,
-                       const GrNonInstancedMesh& mesh,
-                       size_t* indexOffsetInBytes);
+                       const GrBuffer* indexBuffer,
+                       const GrBuffer* vertexBuffer,
+                       int baseVertex);
 
     void flushBlend(const GrXferProcessor::BlendInfo& blendInfo, const GrSwizzle&);
 
@@ -307,7 +316,6 @@ private:
     };
 
     void flushColorWrite(bool writeColor);
-    void flushDrawFace(GrDrawFace face);
 
     // flushes the scissor. see the note on flushBoundTextureAndParams about
     // flushing the scissor after that function is called.
@@ -559,7 +567,6 @@ private:
     TriState                                fHWStencilTestEnabled;
 
 
-    GrDrawFace                              fHWDrawFace;
     TriState                                fHWWriteToColor;
     GrGpuResource::UniqueID                 fHWBoundRenderTargetUniqueID;
     TriState                                fHWSRGBFramebuffer;

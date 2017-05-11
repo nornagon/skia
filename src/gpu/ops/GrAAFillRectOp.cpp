@@ -41,7 +41,7 @@ const GrBuffer* get_index_buffer(GrResourceProvider* resourceProvider) {
     // clang-format on
 
     GR_STATIC_ASSERT(SK_ARRAY_COUNT(gFillAARectIdx) == kIndicesPerAAFillRect);
-    return resourceProvider->findOrCreateInstancedIndexBuffer(
+    return resourceProvider->findOrCreatePatternedIndexBuffer(
             gFillAARectIdx, kIndicesPerAAFillRect, kNumAAFillRectsInIndexBuffer,
             kVertsPerAAFillRect, gAAFillRectIndexBufferKey);
 }
@@ -180,6 +180,7 @@ public:
 
     SkString dumpInfo() const override {
         SkString str;
+        str.append(INHERITED::dumpInfo());
         str.appendf("# combined: %d\n", fRectCnt);
         const RectInfo* info = this->first();
         for (int i = 0; i < fRectCnt; ++i) {
@@ -189,7 +190,6 @@ public:
             info = this->next(info);
         }
         str.append(DumpPipelineInfo(*this->pipeline()));
-        str.append(INHERITED::dumpInfo());
         return str;
     }
 
@@ -231,7 +231,7 @@ private:
         size_t vertexStride = gp->getVertexStride();
 
         sk_sp<const GrBuffer> indexBuffer(get_index_buffer(target->resourceProvider()));
-        InstancedHelper helper;
+        PatternHelper helper;
         void* vertices =
                 helper.init(target, kTriangles_GrPrimitiveType, vertexStride, indexBuffer.get(),
                             kVertsPerAAFillRect, kIndicesPerAAFillRect, fRectCnt);

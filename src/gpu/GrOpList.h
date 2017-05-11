@@ -14,22 +14,22 @@
 //#define ENABLE_MDB 1
 
 class GrAuditTrail;
+class GrCaps;
 class GrOpFlushState;
 class GrRenderTargetOpList;
-class GrSurface;
 class GrSurfaceProxy;
 class GrTextureOpList;
 
 class GrOpList : public SkRefCnt {
 public:
-    GrOpList(GrSurfaceProxy* surfaceProxy, GrAuditTrail* auditTrail);
+    GrOpList(sk_sp<GrSurfaceProxy> surfaceProxy, GrAuditTrail* auditTrail);
     ~GrOpList() override;
 
     // These two methods are invoked as flush time
     virtual void prepareOps(GrOpFlushState* flushState) = 0;
     virtual bool executeOps(GrOpFlushState* flushState) = 0;
 
-    virtual void makeClosed() {
+    virtual void makeClosed(const GrCaps&) {
         // We only close GrOpLists when MDB is enabled. When MDB is disabled there is only
         // ever one GrOpLists and all calls will be funnelled into it.
 #ifdef ENABLE_MDB
@@ -54,7 +54,7 @@ public:
     /*
      * Notify this GrOpList that it relies on the contents of 'dependedOn'
      */
-    void addDependency(GrSurface* dependedOn);
+    void addDependency(GrSurfaceProxy* dependedOn, const GrCaps& caps);
 
     /*
      * Does this opList depend on 'dependedOn'?
@@ -79,6 +79,15 @@ public:
      * Dump out the GrOpList dependency DAG
      */
     SkDEBUGCODE(virtual void dump() const;)
+
+    SkDEBUGCODE(virtual void validateTargetsSingleRenderTarget() const = 0;)
+
+    SkDEBUGCODE(virtual int numOps() const = 0;)
+    SkDEBUGCODE(virtual int numClips() const { return 0; })
+
+protected:
+    GrSurfaceProxy*      fTarget;
+    GrAuditTrail*        fAuditTrail;
 
 private:
     friend class GrDrawingManager; // for resetFlag & TopoSortTraits
@@ -132,13 +141,9 @@ private:
 
     uint32_t             fUniqueID;
     uint32_t             fFlags;
-    GrSurfaceProxy*      fTarget;
 
     // 'this' GrOpList relies on the output of the GrOpLists in 'fDependencies'
     SkTDArray<GrOpList*> fDependencies;
-
-protected:
-    GrAuditTrail*        fAuditTrail;
 
     typedef SkRefCnt INHERITED;
 };

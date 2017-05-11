@@ -31,7 +31,7 @@ SkCodecImageGenerator::SkCodecImageGenerator(SkCodec* codec, sk_sp<SkData> data)
     , fData(std::move(data))
 {}
 
-SkData* SkCodecImageGenerator::onRefEncodedData(GrContext* ctx) {
+SkData* SkCodecImageGenerator::onRefEncodedData() {
     return SkRef(fData.get());
 }
 

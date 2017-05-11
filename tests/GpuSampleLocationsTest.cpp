@@ -122,11 +122,11 @@ void test_sampleLocations(skiatest::Reporter* reporter, TestSampleLocationsInter
     for (int i = 0; i < numTestPatterns; ++i) {
         int numSamples = (int)kTestPatterns[i].size();
         GrAlwaysAssert(numSamples > 1 && SkIsPow2(numSamples));
-        bottomUps[i] = ctx->makeRenderTargetContextWithFallback(
+        bottomUps[i] = ctx->makeDeferredRenderTargetContextWithFallback(
                            SkBackingFit::kExact, 100, 100, kRGBA_8888_GrPixelConfig, nullptr,
                            rand.nextRangeU(1 + numSamples / 2, numSamples),
                            kBottomLeft_GrSurfaceOrigin);
-        topDowns[i] = ctx->makeRenderTargetContextWithFallback(
+        topDowns[i] = ctx->makeDeferredRenderTargetContextWithFallback(
                           SkBackingFit::kExact, 100, 100, kRGBA_8888_GrPixelConfig, nullptr,
                           rand.nextRangeU(1 + numSamples / 2, numSamples),
                           kTopLeft_GrSurfaceOrigin);
@@ -190,6 +190,11 @@ private:
 DEF_GPUTEST(GLSampleLocations, reporter, /*factory*/) {
     GLTestSampleLocationsInterface testInterface;
     sk_sp<GrContext> ctx(GrContext::Create(kOpenGL_GrBackend, testInterface));
+
+    // This test relies on at least 2 samples.
+    if (ctx->caps()->maxSampleCount() < 2) {
+        return;
+    }
     test_sampleLocations(reporter, &testInterface, ctx.get());
 }
 

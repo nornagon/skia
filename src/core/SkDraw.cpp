@@ -1170,11 +1170,10 @@ void SkDraw::drawBitmapAsMask(const SkBitmap& bitmap, const SkPaint& paint) cons
         int ix = SkScalarRoundToInt(fMatrix->getTranslateX());
         int iy = SkScalarRoundToInt(fMatrix->getTranslateY());
 
-        SkAutoPixmapUnlock result;
-        if (!bitmap.requestLock(&result)) {
+        SkPixmap pmap;
+        if (!bitmap.peekPixels(&pmap)) {
             return;
         }
-        const SkPixmap& pmap = result.pixmap();
         SkMask  mask;
         mask.fBounds.set(ix, iy, ix + pmap.width(), iy + pmap.height());
         mask.fFormat = SkMask::kA8_Format;
@@ -1290,11 +1289,10 @@ void SkDraw::drawBitmap(const SkBitmap& bitmap, const SkMatrix& prematrix,
         // It is safe to call lock pixels now, since we know the matrix is
         // (more or less) identity.
         //
-        SkAutoPixmapUnlock unlocker;
-        if (!bitmap.requestLock(&unlocker)) {
+        SkPixmap pmap;
+        if (!bitmap.peekPixels(&pmap)) {
             return;
         }
-        const SkPixmap& pmap = unlocker.pixmap();
         int ix = SkScalarRoundToInt(matrix.getTranslateX());
         int iy = SkScalarRoundToInt(matrix.getTranslateY());
         if (clipHandlesSprite(*fRC, ix, iy, pmap)) {
@@ -1348,11 +1346,10 @@ void SkDraw::drawSprite(const SkBitmap& bitmap, int x, int y, const SkPaint& ori
     SkPaint paint(origPaint);
     paint.setStyle(SkPaint::kFill_Style);
 
-    SkAutoPixmapUnlock unlocker;
-    if (!bitmap.requestLock(&unlocker)) {
+    SkPixmap pmap;
+    if (!bitmap.peekPixels(&pmap)) {
         return;
     }
-    const SkPixmap& pmap = unlocker.pixmap();
 
     if (nullptr == paint.getColorFilter() && clipHandlesSprite(*fRC, x, y, pmap)) {
         // blitter will be owned by the allocator.
@@ -1384,6 +1381,7 @@ void SkDraw::drawSprite(const SkBitmap& bitmap, int x, int y, const SkPaint& ori
 
 ///////////////////////////////////////////////////////////////////////////////
 
+#include "SkPaintPriv.h"
 #include "SkScalerContext.h"
 #include "SkGlyphCache.h"
 #include "SkTextToPathIter.h"
@@ -1401,7 +1399,8 @@ bool SkDraw::ShouldDrawTextAsPaths(const SkPaint& paint, const SkMatrix& ctm) {
     }
 
     SkMatrix textM;
-    return SkPaint::TooBigToUseCache(ctm, *paint.setTextMatrix(&textM));
+    SkPaintPriv::MakeTextMatrix(&textM, paint);
+    return SkPaint::TooBigToUseCache(ctm, textM);
 }
 
 void SkDraw::drawText_asPaths(const char text[], size_t byteLength, SkScalar x, SkScalar y,
@@ -1699,6 +1698,7 @@ public:
         TriColorShaderContext(const SkTriColorShader& shader, const ContextRec&);
         ~TriColorShaderContext() override;
         void shadeSpan(int x, int y, SkPMColor dstC[], int count) override;
+        void shadeSpan4f(int x, int y, SkPM4f dstC[], int count) override;
 
     private:
         bool setup(const SkPoint pts[], const SkColor colors[], int, int, int);
@@ -1707,6 +1707,7 @@ public:
         SkPMColor   fColors[3];
         bool fSetup;
 
+        SkPM4f  fC0, fC10, fC20, fDC;
         typedef SkShader::Context INHERITED;
     };
 
@@ -1768,6 +1769,22 @@ bool SkTriColorShader::TriColorShaderContext::setup(const SkPoint pts[], const S
     }
     // TODO replace INV(m) * INV(ctm) with INV(ctm * m)
     fDstToUnit.setConcat(im, ctmInv);
+
+    fC0 = SkPM4f::FromPMColor(fColors[0]);
+
+    Sk4f alpha(this->getPaintAlpha() * (1.0f / 255)),
+         c0 = fC0.to4f() * alpha,
+         c1 = SkPM4f::FromPMColor(fColors[1]).to4f() * alpha,
+         c2 = SkPM4f::FromPMColor(fColors[2]).to4f() * alpha,
+         dx(fDstToUnit.getScaleX()),
+         dy(fDstToUnit.getSkewY());
+
+    Sk4f c10 = c1 - c0,
+         c20 = c2 - c0;
+
+    fDC  = SkPM4f::From4f(dx * c10 + dy * c20);
+    fC10 = SkPM4f::From4f(c10);
+    fC20 = SkPM4f::From4f(c20);
     return true;
 }
 
@@ -1805,10 +1822,8 @@ void SkTriColorShader::TriColorShaderContext::shadeSpan(int x, int y, SkPMColor 
 
     SkPoint src;
 
+    fDstToUnit.mapXY(SkIntToScalar(x) + 0.5, SkIntToScalar(y) + 0.5, &src);
     for (int i = 0; i < count; i++) {
-        fDstToUnit.mapXY(SkIntToScalar(x), SkIntToScalar(y), &src);
-        x += 1;
-
         int scale1 = ScalarTo256(src.fX);
         int scale2 = ScalarTo256(src.fY);
         int scale0 = 256 - scale1 - scale2;
@@ -1830,6 +1845,33 @@ void SkTriColorShader::TriColorShaderContext::shadeSpan(int x, int y, SkPMColor 
         dstC[i] = SkAlphaMulQ(fColors[0], scale0) +
                   SkAlphaMulQ(fColors[1], scale1) +
                   SkAlphaMulQ(fColors[2], scale2);
+
+        src.fX += fDstToUnit.getScaleX();
+        src.fY += fDstToUnit.getSkewY();
+    }
+}
+
+void SkTriColorShader::TriColorShaderContext::shadeSpan4f(int x, int y, SkPM4f dstC[], int count) {
+    SkTriColorShader* parent = static_cast<SkTriColorShader*>(const_cast<SkShader*>(&fShader));
+    TriColorShaderData* set = parent->takeSetupData();
+    if (set) {
+        fSetup = setup(set->pts, set->colors, set->state->f0, set->state->f1, set->state->f2);
+    }
+
+    if (!fSetup) {
+        // Invalid matrices. Not checked before so no need to assert.
+        return;
+    }
+
+    SkPoint src;
+    fDstToUnit.mapXY(SkIntToScalar(x) + 0.5, SkIntToScalar(y) + 0.5, &src);
+
+    Sk4f c  = fC0.to4f() + src.fX * fC10.to4f() + src.fY * fC20.to4f(),
+         dc = fDC.to4f();
+
+    for (int i = 0; i < count; i++) {
+        c.store(dstC[i].fVec);
+        c += dc;
     }
 }
 

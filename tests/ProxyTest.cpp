@@ -10,6 +10,7 @@
 #include "Test.h"
 
 #if SK_SUPPORT_GPU
+#include "GrBackendSurface.h"
 #include "GrRenderTargetPriv.h"
 #include "GrRenderTargetProxy.h"
 #include "GrResourceProvider.h"
@@ -20,7 +21,7 @@
 static void check_surface(skiatest::Reporter* reporter,
                           GrSurfaceProxy* proxy,
                           GrSurfaceOrigin origin,
-                          int width, int height, 
+                          int width, int height,
                           GrPixelConfig config,
                           const GrGpuResource::UniqueID& uniqueID,
                           SkBudgeted budgeted) {
@@ -213,6 +214,10 @@ DEF_GPUTEST_FOR_RENDERING_CONTEXTS(WrappedProxyTest, reporter, ctxInfo) {
         for (auto config : { kAlpha_8_GrPixelConfig, kRGBA_8888_GrPixelConfig }) {
             for (auto budgeted : { SkBudgeted::kYes, SkBudgeted::kNo }) {
                 for (auto numSamples: { 0, 4}) {
+                    if (caps.maxSampleCount() < numSamples) {
+                        continue;
+                    }
+
                     bool renderable = caps.isConfigRenderable(config, numSamples > 0);
 
                     GrSurfaceDesc desc;
@@ -224,17 +229,13 @@ DEF_GPUTEST_FOR_RENDERING_CONTEXTS(WrappedProxyTest, reporter, ctxInfo) {
 
                     // External on-screen render target.
                     if (renderable && kOpenGL_GrBackend == ctxInfo.backend()) {
-                        GrBackendRenderTargetDesc backendDesc;
-                        backendDesc.fWidth = kWidthHeight;
-                        backendDesc.fHeight = kWidthHeight;
-                        backendDesc.fConfig = config;
-                        backendDesc.fOrigin = origin;
-                        backendDesc.fSampleCnt = numSamples;
-                        backendDesc.fStencilBits = 8;
-                        backendDesc.fRenderTargetHandle = 0;
+                        GrGLFramebufferInfo fboInfo;
+                        fboInfo.fFBOID = 0;
+                        GrBackendRenderTarget backendRT(kWidthHeight, kWidthHeight, numSamples, 8,
+                                                        config, fboInfo);
 
                         sk_sp<GrRenderTarget> defaultFBO(
-                            provider->wrapBackendRenderTarget(backendDesc));
+                            provider->wrapBackendRenderTarget(backendRT, origin));
 
                         sk_sp<GrSurfaceProxy> sProxy(GrSurfaceProxy::MakeWrapped(defaultFBO));
                         check_surface(reporter, sProxy.get(), origin,
@@ -272,6 +273,36 @@ DEF_GPUTEST_FOR_RENDERING_CONTEXTS(WrappedProxyTest, reporter, ctxInfo) {
                                   kWidthHeight, kWidthHeight, config, tex->uniqueID(), budgeted);
                     check_texture(reporter, provider, sProxy->asTextureProxy(),
                                   SkBackingFit::kExact, true);
+                }
+            }
+        }
+    }
+}
+
+DEF_GPUTEST_FOR_RENDERING_CONTEXTS(ZeroSizedProxyTest, reporter, ctxInfo) {
+    GrResourceProvider* provider = ctxInfo.grContext()->resourceProvider();
+
+    for (auto flags : { kRenderTarget_GrSurfaceFlag, kNone_GrSurfaceFlags }) {
+        for (auto fit : { SkBackingFit::kExact, SkBackingFit::kApprox }) {
+            for (int width : { 0, 100 }) {
+                for (int height : { 0, 100}) {
+                    if (width && height) {
+                        continue; // not zero-sized
+                    }
+
+                    GrSurfaceDesc desc;
+                    desc.fFlags = flags;
+                    desc.fOrigin = kBottomLeft_GrSurfaceOrigin;
+                    desc.fWidth = width;
+                    desc.fHeight = height;
+                    desc.fConfig = kRGBA_8888_GrPixelConfig;
+                    desc.fSampleCnt = 0;
+
+                    sk_sp<GrTextureProxy> proxy(GrSurfaceProxy::MakeDeferred(provider,
+                                                                             desc,
+                                                                             fit,
+                                                                             SkBudgeted::kNo));
+                    REPORTER_ASSERT(reporter, !proxy);
                 }
             }
         }

@@ -47,8 +47,6 @@ int32_t GrIORefProxy::getPendingWriteCnt_TestOnly() const {
     return fPendingWrites;
 }
 
-#ifndef SK_DISABLE_DEFERRED_PROXIES
-
 static const int kWidthHeight = 128;
 
 static void check_refs(skiatest::Reporter* reporter,
@@ -76,7 +74,8 @@ static sk_sp<GrTextureProxy> make_deferred(GrContext* context) {
     desc.fConfig = kRGBA_8888_GrPixelConfig;
 
     return GrSurfaceProxy::MakeDeferred(context->resourceProvider(), desc,
-                                        SkBackingFit::kApprox, SkBudgeted::kYes);
+                                        SkBackingFit::kApprox, SkBudgeted::kYes,
+                                        GrResourceProvider::kNoPendingIO_Flag);
 }
 
 static sk_sp<GrTextureProxy> make_wrapped(GrContext* context) {
@@ -190,6 +189,5 @@ DEF_GPUTEST_FOR_RENDERING_CONTEXTS(ProxyRefTest, reporter, ctxInfo) {
         }
     }
 }
-#endif
 
 #endif

@@ -106,13 +106,17 @@ sk_sp<GrTextureProxy> SkImageGenerator::onGenerateTexture(GrContext*, const SkIm
 
 /////////////////////////////////////////////////////////////////////////////////////////////
 
-SkData* SkImageGenerator::onRefEncodedData(GrContext* ctx) {
+SkData* SkImageGenerator::onRefEncodedData() {
     return nullptr;
 }
 
 bool SkImageGenerator::onGetPixels(const SkImageInfo& info, void* dst, size_t rb,
                                    SkPMColor* colors, int* colorCount) {
     return false;
+}
+
+bool SkImageGenerator::onIsValid(GrContext*) const {
+    return true;
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////

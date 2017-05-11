@@ -17,7 +17,7 @@
 #include "GrRenderTargetContextPriv.h"
 #include "GrTextureProxy.h"
 #include "effects/GrSimpleTextureEffect.h"
-#include "ops/GrRectOpFactory.h"
+#include "ops/GrNonAAFillRectOp.h"
 
 // Basic test of Ganesh's ETC1 support
 class ETC1GM : public skiagm::GM {
@@ -35,8 +35,6 @@ protected:
         return SkISize::Make(kTexWidth + 2*kPad, kTexHeight + 2*kPad);
     }
 
-    // TODO: we should be creating an ETC1 SkData blob here and going through SkImageCacherator.
-    // That will require an ETC1 Codec though - so for later.
     void onOnceBeforeDraw() override {
         SkBitmap bm;
         SkImageInfo ii = SkImageInfo::Make(kTexWidth, kTexHeight, kRGB_565_SkColorType,
@@ -99,10 +97,8 @@ protected:
 
         SkRect rect = SkRect::MakeXYWH(kPad, kPad, kTexWidth, kTexHeight);
 
-        std::unique_ptr<GrLegacyMeshDrawOp> op(GrRectOpFactory::MakeNonAAFill(
-                GrColor_WHITE, SkMatrix::I(), rect, nullptr, nullptr));
-        renderTargetContext->priv().testingOnly_addLegacyMeshDrawOp(
-                std::move(grPaint), GrAAType::kNone, std::move(op));
+        renderTargetContext->priv().testingOnly_addDrawOp(GrNonAAFillRectOp::Make(
+                std::move(grPaint), SkMatrix::I(), rect, nullptr, nullptr, GrAAType::kNone));
     }
 
 private:

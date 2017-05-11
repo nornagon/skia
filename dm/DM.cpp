@@ -1033,6 +1033,8 @@ static bool dump_png(SkBitmap bitmap, const char* path, const char* md5) {
     png_set_IHDR(png, info, (png_uint_32)w, (png_uint_32)h, 8,
                  PNG_COLOR_TYPE_RGB_ALPHA, PNG_INTERLACE_NONE,
                  PNG_COMPRESSION_TYPE_DEFAULT, PNG_FILTER_TYPE_DEFAULT);
+    png_set_filter(png,  PNG_FILTER_TYPE_BASE, PNG_FILTER_NONE);
+    png_set_compression_level(png, 1);
     png_write_info(png, info);
     for (int j = 0; j < h; j++) {
         png_bytep row = (png_bytep)(rgba + w*j);
@@ -1110,9 +1112,6 @@ struct Task {
             gDefinitelyThreadSafeWork.add([task,name,bitmap,data]{
                 std::unique_ptr<SkStreamAsset> ownedData(data);
 
-                // Why doesn't the copy constructor do this when we have pre-locked pixels?
-                bitmap.lockPixels();
-
                 SkString md5;
                 if (!FLAGS_writePath.isEmpty() || !FLAGS_readPath.isEmpty()) {
                     SkMD5 hash;
@@ -1126,7 +1125,8 @@ struct Task {
                         // We might consider promoting 565 to RGBA too.
                         if (bitmap.colorType() == kBGRA_8888_SkColorType) {
                             SkBitmap swizzle;
-                            SkAssertResult(bitmap.copyTo(&swizzle, kRGBA_8888_SkColorType));
+                            SkAssertResult(sk_tool_utils::copy_to(&swizzle, kRGBA_8888_SkColorType,
+                                                                  bitmap));
                             hash.write(swizzle.getPixels(), swizzle.getSize());
                         } else {
                             hash.write(bitmap.getPixels(), bitmap.getSize());

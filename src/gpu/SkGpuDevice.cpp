@@ -22,7 +22,6 @@
 #include "SkDraw.h"
 #include "SkGlyphCache.h"
 #include "SkGr.h"
-#include "SkImageCacherator.h"
 #include "SkImageFilter.h"
 #include "SkImageFilterCache.h"
 #include "SkImageInfoPriv.h"
@@ -168,7 +167,8 @@ sk_sp<GrRenderTargetContext> SkGpuDevice::MakeRenderTargetContext(
     GrPixelConfig config = SkImageInfo2GrPixelConfig(origInfo, *context->caps());
     // This method is used to create SkGpuDevice's for SkSurface_Gpus. In this case
     // they need to be exact.
-    return context->makeRenderTargetContext(SkBackingFit::kExact,
+    return context->makeDeferredRenderTargetContext(
+                                    SkBackingFit::kExact,
                                     origInfo.width(), origInfo.height(),
                                     config, origInfo.refColorSpace(), sampleCount,
                                     origin, surfaceProps, budgeted);
@@ -957,12 +957,6 @@ void SkGpuDevice::drawTiledBitmap(const SkBitmap& bitmap,
     SK_HISTOGRAM_BOOLEAN("DrawTiled", true);
     LogDrawScaleFactor(viewMatrix, origPaint.getFilterQuality());
 
-    // The following pixel lock is technically redundant, but it is desirable
-    // to lock outside of the tile loop to prevent redecoding the whole image
-    // at each tile in cases where 'bitmap' holds an SkDiscardablePixelRef that
-    // is larger than the limit of the discardable memory pool.
-    SkAutoLockPixels alp(bitmap);
-
     const SkPaint* paint = &origPaint;
     SkPaint tempPaint;
     if (origPaint.isAntiAlias() && !fRenderTargetContext->isUnifiedMultisampled()) {
@@ -1131,16 +1125,17 @@ void SkGpuDevice::drawSprite(const SkBitmap& bitmap,
         return;
     }
 
-    this->drawSpecial(srcImg.get(), left, top, paint);
+    this->drawSpecial(srcImg.get(), left, top, paint, nullptr, SkMatrix::I());
 }
 
 
-void SkGpuDevice::drawSpecial(SkSpecialImage* special1,
-                              int left, int top,
-                              const SkPaint& paint) {
+void SkGpuDevice::drawSpecial(SkSpecialImage* special1, int left, int top, const SkPaint& paint,
+                              SkImage* clipImage,const SkMatrix& clipMatrix) {
     ASSERT_SINGLE_OWNER
     CHECK_SHOULD_DRAW();
     GR_CREATE_TRACE_MARKER_CONTEXT("SkGpuDevice", "drawSpecial", fContext.get());
+
+    // TODO: clipImage support.
 
     SkIPoint offset = { 0, 0 };
 
@@ -1335,7 +1330,6 @@ sk_sp<SkSpecialImage> SkGpuDevice::snapSpecial() {
     const SkImageInfo ii = this->imageInfo();
     const SkIRect srcRect = SkIRect::MakeWH(ii.width(), ii.height());
 
-    SkASSERT(proxy->priv().isExact());
     return SkSpecialImage::MakeDeferredFromGpu(fContext.get(),
                                                srcRect,
                                                kNeedNewImageUniqueID_SpecialImage,
@@ -1361,7 +1355,7 @@ void SkGpuDevice::drawDevice(SkBaseDevice* device,
         return;
     }
 
-    this->drawSpecial(srcImg.get(), left, top, paint);
+    this->drawSpecial(srcImg.get(), left, top, paint, nullptr, SkMatrix::I());
 }
 
 void SkGpuDevice::drawImage(const SkImage* image, SkScalar x, SkScalar y,
@@ -1388,9 +1382,9 @@ void SkGpuDevice::drawImage(const SkImage* image, SkScalar x, SkScalar y,
                 return;
             }
             this->drawBitmap(bm, SkMatrix::MakeTrans(x, y), paint);
-        } else if (SkImageCacherator* cacher = as_IB(image)->peekCacherator()) {
+        } else if (image->isLazyGenerated()) {
             CHECK_SHOULD_DRAW();
-            GrImageTextureMaker maker(fContext.get(), cacher, image, SkImage::kAllow_CachingHint);
+            GrImageTextureMaker maker(fContext.get(), image, SkImage::kAllow_CachingHint);
             this->drawTextureProducer(&maker, nullptr, nullptr, SkCanvas::kFast_SrcRectConstraint,
                                       viewMatrix, this->clip(), paint);
         } else if (as_IB(image)->getROPixels(&bm, fRenderTargetContext->getColorSpace())) {
@@ -1424,9 +1418,9 @@ void SkGpuDevice::drawImageRect(const SkImage* image, const SkRect* src,
             return;
         }
         this->drawBitmapRect(bm, src, dst, paint, constraint);
-    } else if (SkImageCacherator* cacher = as_IB(image)->peekCacherator()) {
+    } else if (image->isLazyGenerated()) {
         CHECK_SHOULD_DRAW();
-        GrImageTextureMaker maker(fContext.get(), cacher, image, SkImage::kAllow_CachingHint);
+        GrImageTextureMaker maker(fContext.get(), image, SkImage::kAllow_CachingHint);
         this->drawTextureProducer(&maker, src, &dst, constraint, this->ctm(), this->clip(), paint);
     } else if (as_IB(image)->getROPixels(&bm, fRenderTargetContext->getColorSpace())) {
         this->drawBitmapRect(bm, src, dst, paint, constraint);
@@ -1488,8 +1482,8 @@ void SkGpuDevice::drawImageNine(const SkImage* image,
         this->drawProducerNine(&adjuster, center, dst, paint);
     } else {
         SkBitmap bm;
-        if (SkImageCacherator* cacher = as_IB(image)->peekCacherator()) {
-            GrImageTextureMaker maker(fContext.get(), cacher, image, SkImage::kAllow_CachingHint);
+        if (image->isLazyGenerated()) {
+            GrImageTextureMaker maker(fContext.get(), image, SkImage::kAllow_CachingHint);
             this->drawProducerNine(&maker, center, dst, paint);
         } else if (as_IB(image)->getROPixels(&bm, fRenderTargetContext->getColorSpace())) {
             this->drawBitmapNine(bm, center, dst, paint);
@@ -1544,8 +1538,8 @@ void SkGpuDevice::drawImageLattice(const SkImage* image,
         this->drawProducerLattice(&adjuster, lattice, dst, paint);
     } else {
         SkBitmap bm;
-        if (SkImageCacherator* cacher = as_IB(image)->peekCacherator()) {
-            GrImageTextureMaker maker(fContext.get(), cacher, image, SkImage::kAllow_CachingHint);
+        if (image->isLazyGenerated()) {
+            GrImageTextureMaker maker(fContext.get(), image, SkImage::kAllow_CachingHint);
             this->drawProducerLattice(&maker, lattice, dst, paint);
         } else if (as_IB(image)->getROPixels(&bm, fRenderTargetContext->getColorSpace())) {
             this->drawBitmapLattice(bm, lattice, dst, paint);
@@ -1568,8 +1562,7 @@ static bool init_vertices_paint(GrContext* context, GrRenderTargetContext* rtc,
     if (hasTexs && skPaint.getShader()) {
         if (hasColors) {
             // When there are texs and colors the shader and colors are combined using bmode.
-            return SkPaintToGrPaintWithXfermode(context, rtc, skPaint, matrix, bmode, false,
-                                                grPaint);
+            return SkPaintToGrPaintWithXfermode(context, rtc, skPaint, matrix, bmode, grPaint);
         } else {
             // We have a shader, but no colors to blend it against.
             return SkPaintToGrPaint(context, rtc, skPaint, matrix, grPaint);
@@ -1683,12 +1676,12 @@ void SkGpuDevice::drawAtlas(const SkImage* atlas, const SkRSXform xform[],
     GR_CREATE_TRACE_MARKER_CONTEXT("SkGpuDevice", "drawText", fContext.get());
 
     SkPaint p(paint);
-    p.setShader(atlas->makeShader(SkShader::kClamp_TileMode, SkShader::kClamp_TileMode));
+    p.setShader(atlas->makeShader());
 
     GrPaint grPaint;
     if (colors) {
         if (!SkPaintToGrPaintWithXfermode(this->context(), fRenderTargetContext.get(), p,
-                                          this->ctm(), (SkBlendMode)mode, true, &grPaint)) {
+                                          this->ctm(), (SkBlendMode)mode, &grPaint)) {
             return;
         }
     } else {
@@ -1766,13 +1759,13 @@ SkBaseDevice* SkGpuDevice::onCreateDevice(const CreateInfo& cinfo, const SkPaint
     SkBackingFit fit = kNever_TileUsage == cinfo.fTileUsage ? SkBackingFit::kApprox
                                                             : SkBackingFit::kExact;
 
-    sk_sp<GrRenderTargetContext> rtc(fContext->makeRenderTargetContext(
+    sk_sp<GrRenderTargetContext> rtc(fContext->makeDeferredRenderTargetContext(
                                                    fit,
                                                    cinfo.fInfo.width(), cinfo.fInfo.height(),
-                                                   fRenderTargetContext->config(), 
-                                                   fRenderTargetContext->refColorSpace(), 
-                                                   fRenderTargetContext->desc().fSampleCnt, 
-                                                   kDefault_GrSurfaceOrigin,
+                                                   fRenderTargetContext->config(),
+                                                   fRenderTargetContext->refColorSpace(),
+                                                   fRenderTargetContext->desc().fSampleCnt,
+                                                   kBottomLeft_GrSurfaceOrigin,
                                                    &props));
     if (!rtc) {
         return nullptr;

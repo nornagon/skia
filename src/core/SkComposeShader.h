@@ -11,6 +11,8 @@
 #include "SkShader.h"
 #include "SkBlendMode.h"
 
+class SkColorSpacXformer;
+
 ///////////////////////////////////////////////////////////////////////////////////////////
 
 /** \class SkComposeShader
@@ -68,6 +70,7 @@ protected:
     SkComposeShader(SkReadBuffer&);
     void flatten(SkWriteBuffer&) const override;
     Context* onMakeContext(const ContextRec&, SkArenaAlloc*) const override;
+    sk_sp<SkShader> onMakeColorSpace(SkColorSpaceXformer* xformer) const override;
 
 private:
     sk_sp<SkShader>     fShaderA;
