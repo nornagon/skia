@@ -855,8 +855,8 @@ typedef struct {
 } sk_encodedinfo_t;
 
 typedef struct {
-    size_t fRequiredFrame;
-    size_t fDuration;
+    int fRequiredFrame;
+    int fDuration;
     bool fFullyReceived;
     sk_alphatype_t fAlphaType;
 } sk_codec_frameinfo_t;
