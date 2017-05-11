@@ -520,7 +520,7 @@ typedef enum {
 typedef struct {
     sk_codec_zero_initialized_t fZeroInitialized;
     sk_irect_t* fSubset;
-    size_t fFrameIndex;
+    int fFrameIndex;
     bool fHasPriorFrame;
     sk_transfer_function_behavior_t fPremulBehavior;
 } sk_codec_options_t;
